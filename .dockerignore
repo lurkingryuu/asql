@@ -1,0 +1,42 @@
+.git # Ignore git directory
+
+# Ignore files and directories commonly used in development
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Ignore editor and IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Ignore system and temporary files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*.tmp
+*.log
+
+# Ignore build artifacts and dependencies
+/build/
+/dist/
+/out/
+/target/
+*.exe
+*.dll
+*.so
+*.dylib
+*.jar
+*.war
+*.ear
+*.class
+*.zip
+*.tar.gz
+*.rar
+*.gz
+*.bz2
+*.7z
