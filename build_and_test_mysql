@@ -1,1 +1,186 @@
-../scripts/build_and_test_mysql
+#!/bin/bash
+
+set -e  # Exit immediately if a command fails
+
+# take options
+# --no-build: skip building MySQL
+# --no-test: skip testing MySQL
+# --no-clean: skip cleaning up MySQL installation
+
+
+# Parse command line arguments
+# Variables
+NO_BUILD=0
+NO_TEST=0
+NO_CLEAN=0
+
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        --no-build)
+            NO_BUILD=1
+            shift
+            ;;
+        --no-test)
+            NO_TEST=1
+            shift
+            ;;
+        --no-clean)
+            NO_CLEAN=1
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Variables
+MYSQL_INSTALL_DIR="/usr/local/mysql"
+MYSQL_BUILD_DIR="$HOME/mysql-server-ext/build"
+MYSQL_DATA_DIR="$MYSQL_BUILD_DIR/data"
+DEBUG_LOG="/tmp/mysql_debug_trace.log"
+
+# Clean up MySQL installation
+if [ "$NO_CLEAN" -eq 0 ]; then
+    echo "### Stopping and Removing Any Previous MySQL Installation ###"
+    if pgrep mysqld; then
+        echo "Stopping MySQL service..."
+        sudo pkill -9 mysqld
+    fi
+
+    # Remove previous data directory (if exists)
+    if [ -d "$MYSQL_DATA_DIR" ]; then
+        echo "Removing existing MySQL data directory: $MYSQL_DATA_DIR"
+        sudo rm -rf "$MYSQL_DATA_DIR"
+    fi
+
+    # Remove previous debug log (if exists)
+    if [ -f "$DEBUG_LOG" ]; then
+        echo "Removing existing debug log: $DEBUG_LOG"
+        sudo rm -f "$DEBUG_LOG"
+    fi
+fi
+
+
+# Build MySQL
+if [ "$NO_BUILD" -eq 0 ]; then
+
+    # Remove previous MySQL installation (if exists)
+    if [ -d "$MYSQL_INSTALL_DIR" ]; then
+        echo "Removing existing MySQL installation: $MYSQL_INSTALL_DIR"
+        sudo rm -rf "$MYSQL_INSTALL_DIR"
+    fi
+
+    echo "### Configuring and Building MySQL ###"
+    mkdir -p "$MYSQL_BUILD_DIR"
+    cd "$MYSQL_BUILD_DIR"
+
+    cmake .. -DWITH_BOOST="$HOME/boost_1_73_0" \
+        -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl/ \
+        -DOPENSSL_CRYPTO_LIBRARY=/usr/local/opt/openssl/lib/ \
+        -DWITH_DEBUG=0 -DCMAKE_LINKER=lld
+
+    num_cores=$(nproc)
+    num_cores=$((num_cores - 4))
+    echo "### Building MySQL with $num_cores cores ###"
+    make -j"$num_cores"
+
+    echo "### Installing MySQL ###"
+    sudo make install
+
+    echo "### MySQL Build Successful! ###"
+
+    echo "### Setting up MySQL User and Permissions ###"
+    if ! id "mysql" &>/dev/null; then
+        sudo groupadd -f mysql
+        sudo useradd -r -g mysql -s /bin/mysql
+    fi
+
+    sudo mkdir -p "$MYSQL_INSTALL_DIR/mysql-files"
+    sudo chown -R mysql:mysql "$MYSQL_INSTALL_DIR/mysql-files"
+fi
+
+if [ "$NO_CLEAN" -eq 0 ]; then
+    cd "$MYSQL_BUILD_DIR"
+    
+    # Re-check and remove any leftover MySQL data
+    if [ -d "$MYSQL_DATA_DIR" ]; then
+        echo "Cleaning up old MySQL data directory..."
+        sudo rm -rf "$MYSQL_DATA_DIR"
+    fi
+
+    # Initialize MySQL
+    echo "### Initializing MySQL Server ###"
+    sudo bin/mysqld --initialize-insecure --user=mysql --datadir="$MYSQL_DATA_DIR"
+
+    # Start MySQL Server with Debugging Enabled
+    echo "### Starting MySQL Server with Debugging ###"
+    # sudo bin/mysqld --debug=d:t:i:o,$DEBUG_LOG --user=mysql --datadir="$MYSQL_DATA_DIR" &
+    sudo bin/mysqld --user=mysql --datadir="$MYSQL_DATA_DIR" --bind-address=0.0.0.0 &
+
+    # Instructions to View Debug Logs
+    echo "### To View Debug Logs, Run: ###"
+    echo "less $DEBUG_LOG"
+    echo "### To Filter Specific Debug Messages, Use: ###"
+    echo "grep '<YourKeyword>' $DEBUG_LOG"
+
+
+    sleep 5  # Allow MySQL to start
+fi
+
+if [ "$NO_TEST" -eq 1 ]; then
+    echo "### Skipping MySQL Test ###"
+    exit 0
+fi
+
+# Test MySQL connection
+echo "### Running MySQL Test ###"
+mysql -u root --skip-password -e "SELECT VERSION();" || { echo "MySQL test failed"; exit 1; }
+
+echo "### MySQL Build and Test Successful! ###"
+echo "### MySQL Server is Running! ###"
+
+
+test_all_features() {
+mysql -u root --skip-password -e "CREATE USER 'user_alice'@'localhost' IDENTIFIED BY '';"
+mysql -u root --skip-password -e "CREATE USER 'user_bob'@'localhost' IDENTIFIED BY '';"
+mysql -u root --skip-password -e "CREATE USER 'user_charlie'@'localhost' IDENTIFIED BY '';"
+mysql -u root --skip-password -e "CREATE USER 'user_charlie'@'198.19.249.3' IDENTIFIED BY '';"
+
+mysql -u root --skip-password -e "CREATE DATABASE IF NOT EXISTS abac_test";
+mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.employees ( id INT PRIMARY KEY, name VARCHAR(100), department VARCHAR(50) )";
+mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.projects ( id INT PRIMARY KEY, name VARCHAR(100), classification VARCHAR(50) )";
+mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.sensitive_data ( id INT PRIMARY KEY, info TEXT )";
+mysql -u root --skip-password -e "INSERT INTO abac_test.employees (id, name, department) VALUES (1, 'Alice', 'IT'), (2, 'Bob', 'HR'), (3, 'Charlie', 'Finance')";
+mysql -u root --skip-password -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (1, 'Project X', 'Top Secret'), (2, 'Project Y', 'Confidential'), (3, 'Project Z', 'Public')";
+mysql -u root --skip-password -e "INSERT INTO abac_test.sensitive_data (id, info) VALUES (1, 'Sensitive information 1'), (2, 'Sensitive information 2'), (3, 'Sensitive information 3')";
+
+mysql -u root --skip-password -e "CREATE USER ATTRIBUTE user_role";
+mysql -u root --skip-password -e "CREATE USER ATTRIBUTE clearance_level";
+mysql -u root --skip-password -e "CREATE RESOURCE ATTRIBUTE data_classification";
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:manager TO user_alice";
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:employee TO user_bob";
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:intern TO user_charlie";
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:top_secret TO user_alice";
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:confidential TO user_bob";
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:public TO user_charlie";
+mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:public TO abac_test.employees";
+mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:priv TO abac_test.projects";
+mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:sensitiv TO abac_test.sensitive_data";
+
+mysql -u root --skip-password -e  "CREATE RULE manager_access FOR SELECT OF USER ATTRIBUTE (user_role:manager) AND RESOURCE ATTRIBUTE (data_classification:sensitiv) AND ENVIRONMENT ATTRIBUTE (weekday, night, '127.0.0.0/8')";
+mysql -u root --skip-password -e  "CREATE RULE employee_access FOR SELECT, INSERT, UPDATE, DELETE OF USER ATTRIBUTE (user_role:employee) AND RESOURCE ATTRIBUTE (data_classification:priv) AND ENVIRONMENT ATTRIBUTE (weekday, night, '127.0.0.0/8')";
+mysql -u root --skip-password -e  "CREATE RULE intern_access FOR SELECT OF USER ATTRIBUTE (user_role:intern) AND RESOURCE ATTRIBUTE (data_classification:public) AND ENVIRONMENT ATTRIBUTE (weekday, night, '198.0.0.0/8')";
+
+# mysql -u user_alice --skip-password -e "SELECT * FROM abac_test.sensitive_data;"
+# mysql -u user_bob --skip-password -e "SELECT * FROM abac_test.projects;"
+# mysql -u user_charlie --skip-password -e "SELECT * FROM abac_test.employees;"
+
+# mysql -u user_bob --skip-password -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (4, 'Project A', 'Top Secret'); SELECT * FROM abac_test.projects;"
+# mysql -u user_bob --skip-password -e "UPDATE abac_test.projects SET classification = 'Top Secret' WHERE id = 1; SELECT * FROM abac_test.projects;"
+# mysql -u user_bob --skip-password -e "DELETE FROM abac_test.projects WHERE id = 1; SELECT * FROM abac_test.projects;"
+}
+
+test_all_features
