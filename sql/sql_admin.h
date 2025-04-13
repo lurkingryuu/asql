@@ -364,19 +364,22 @@ class Sql_cmd_create_rule : public Sql_cmd {
   attribute_value_list object_attrib_map;
   std::string weekday;
   std::string daytime;
+  std::string ip_spec;
   public:
     explicit Sql_cmd_create_rule(std::string rule_name_arg,
                                 int privs_arg,
                                 attribute_value_list user_attrib_map_arg,
                                 attribute_value_list object_attrib_map_arg, 
                                 std::string weekday_arg, 
-                                std::string daytime_arg) 
+                                std::string daytime_arg,
+                                std::string ip_spec_arg) 
         : rule_name(rule_name_arg),
           privs(privs_arg),
           user_attrib_map(user_attrib_map_arg),
           object_attrib_map(object_attrib_map_arg), 
           weekday(weekday_arg),
-          daytime(daytime_arg) {}
+          daytime(daytime_arg),
+          ip_spec(ip_spec_arg) {}
 
     bool execute(THD *thd) override;
     enum_sql_command sql_command_code() const override {

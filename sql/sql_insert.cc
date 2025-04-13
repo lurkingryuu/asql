@@ -104,6 +104,8 @@
 #include "template_utils.h"
 #include "thr_lock.h"
 
+#include "log.h"
+
 namespace dd {
 class Table;
 }  // namespace dd
@@ -429,7 +431,11 @@ bool Sql_cmd_insert_base::precheck(THD *thd) {
   ulong privilege = INSERT_ACL | (duplicates == DUP_REPLACE ? DELETE_ACL : 0) |
                     (update_value_list.empty() ? 0 : UPDATE_ACL);
 
-  if (check_one_table_access(thd, privilege, lex->query_tables)) return true;
+  if (check_one_table_access(thd, privilege, lex->query_tables)) {
+    // Log the error using a proper logging mechanism or remove this line in production.
+    sql_print_error("[Sql_cmd_insert_base::precheck] check_one_table_access is true");
+    return true;
+  }
 
   return false;
 }
@@ -437,14 +443,24 @@ bool Sql_cmd_insert_base::precheck(THD *thd) {
 bool Sql_cmd_insert_base::check_privileges(THD *thd) {
   DBUG_TRACE;
 
-  if (check_all_table_privileges(thd)) return (true);
+  if (check_all_table_privileges(thd)) {
+    // Log the error using a proper logging mechanism or remove this line in production.
+    sql_print_error("[Sql_cmd_insert_base::check_privileges] check_all_table_privileges is true");
+    return (true);
+  }
 
-  if (check_privileges_for_list(thd, insert_field_list, INSERT_ACL))
+  if (check_privileges_for_list(thd, insert_field_list, INSERT_ACL)) {
+    // Log the error using a proper logging mechanism or remove this line in production.
+    sql_print_error("[Sql_cmd_insert_base::check_privileges] check_privileges_for_list is true");
     return true;
+  }
 
   if (values_need_privilege_check) {
     for (List_item *values : insert_many_values) {
-      if (check_privileges_for_list(thd, *values, SELECT_ACL)) return true;
+      if (check_privileges_for_list(thd, *values, SELECT_ACL)) {
+        std::cout << "[Sql_cmd_insert_base::check_privileges] check_privileges_for_list is true\n";
+        return true;
+      }
     }
   }
   if (duplicates == DUP_UPDATE) {
@@ -456,7 +472,11 @@ bool Sql_cmd_insert_base::check_privileges(THD *thd) {
 
   for (Query_block *sl = lex->unit->first_query_block(); sl;
        sl = sl->next_query_block()) {
-    if (sl->check_column_privileges(thd)) return true;
+    if (sl->check_column_privileges(thd)) {
+      // Log the error using a proper logging mechanism or remove this line in production.
+      sql_print_error("[Sql_cmd_insert_base::check_privileges] sl->check_column_privileges is true");
+      return true;
+    }
   }
   return false;
 }

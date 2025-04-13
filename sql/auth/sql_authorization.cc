@@ -22,6 +22,14 @@
 
 #include "sql/auth/sql_authorization.h"
 
+// #define CPPHTTPLIB_OPENSSL_SUPPORT
+#include "httplib.h"
+#include "json.hpp"
+#include "sql/protocol_classic.h"
+
+using json = nlohmann::json;
+using namespace httplib;
+
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -1427,7 +1435,7 @@ void get_sp_access_map(
   //   }
   // }
 
-  //  yha change krna h
+  //  TODOBTP: yha change krna h
 }
 
 void get_table_access_map(ACL_USER *acl_user, Table_access_map *table_map) {
@@ -1537,7 +1545,7 @@ void get_table_access_map(ACL_USER *acl_user, Table_access_map *table_map) {
   //   }
   // }
 
-  //  yha change krna h
+  //  TODOBTP: yha change krna h
 }
 
 void get_dynamic_privileges(ACL_USER *acl_user, Dynamic_privileges *acl) {
@@ -2184,9 +2192,251 @@ bool has_partial_view_routine_access(THD *thd, const char *db,
 
   return !check_routine_level_acl(thd, db, routine_name, is_proc);
 }
+/*
+#define SELECT_ACL (1L << 0)
+#define INSERT_ACL (1L << 1)
+#define UPDATE_ACL (1L << 2)
+#define DELETE_ACL (1L << 3)
+#define CREATE_ACL (1L << 4)
+#define DROP_ACL (1L << 5)
+#define RELOAD_ACL (1L << 6)
+#define SHUTDOWN_ACL (1L << 7)
+#define PROCESS_ACL (1L << 8)
+#define FILE_ACL (1L << 9)
+
+#define GRANT_ACL (1L << 10)
+#define REFERENCES_ACL (1L << 11)
+#define INDEX_ACL (1L << 12)
+#define ALTER_ACL (1L << 13)
+#define SHOW_DB_ACL (1L << 14)
+#define SUPER_ACL (1L << 15)
+#define CREATE_TMP_ACL (1L << 16)
+#define LOCK_TABLES_ACL (1L << 17)
+#define EXECUTE_ACL (1L << 18)
+#define REPL_SLAVE_ACL (1L << 19)
+#define REPL_CLIENT_ACL (1L << 20)
+#define CREATE_VIEW_ACL (1L << 21)
+#define SHOW_VIEW_ACL (1L << 22)
+#define CREATE_PROC_ACL (1L << 23)
+#define ALTER_PROC_ACL (1L << 24)
+#define CREATE_USER_ACL (1L << 25)
+#define EVENT_ACL (1L << 26)
+#define TRIGGER_ACL (1L << 27)
+#define CREATE_TABLESPACE_ACL (1L << 28)
+#define CREATE_ROLE_ACL (1L << 29)
+#define DROP_ROLE_ACL (1L << 30)
 
 
-int check_access_abac(ABAC_TREE_NODE* root, string user_hash_value, string object_hash_value) {
+#define NO_ACCESS (1L << 31)
+
+  Privileges to perform database related operations.
+  Use this macro over DB_ACLS unless there is real need to use
+  additional privileges present in the DB_ACLS
+
+#define DB_OP_ACLS                                                             
+  (UPDATE_ACL | SELECT_ACL | INSERT_ACL | DELETE_ACL | CREATE_ACL | DROP_ACL | 
+   REFERENCES_ACL | INDEX_ACL | ALTER_ACL | CREATE_TMP_ACL | LOCK_TABLES_ACL | 
+   EXECUTE_ACL | CREATE_VIEW_ACL | SHOW_VIEW_ACL | CREATE_PROC_ACL |           
+   ALTER_PROC_ACL | EVENT_ACL | TRIGGER_ACL)
+
+
+  Privileges to perform table related operations.
+  Use this macro over TABLE_ACLS unless there is real need to use
+  additional privileges present in the DB_ACLS
+
+#define TABLE_OP_ACLS                                                          
+  (SELECT_ACL | INSERT_ACL | UPDATE_ACL | DELETE_ACL | CREATE_ACL | DROP_ACL | 
+   REFERENCES_ACL | INDEX_ACL | ALTER_ACL | CREATE_VIEW_ACL | SHOW_VIEW_ACL |  
+   TRIGGER_ACL)
+
+
+*/
+std::vector<std::string> priv_to_action(int priv) {
+  std::vector<std::string> action;
+  for (int i = 0; i < 32; i++) {
+    if (priv & (1 << i)) {
+      switch (priv & (1 << i)) {
+        case SELECT_ACL:
+          action.push_back("Select");
+          break;
+        case INSERT_ACL:
+          action.push_back("Insert");
+          break;
+        case UPDATE_ACL:
+          action.push_back("Update");
+          break;
+        case DELETE_ACL:
+          action.push_back("Delete");
+          break;
+        case CREATE_ACL:
+          action.push_back("Create");
+          break;
+        case DROP_ACL:
+          action.push_back("Drop");
+          break;
+        case ALTER_ACL:
+          action.push_back("Alter");
+          break;
+        case CREATE_VIEW_ACL:
+          action.push_back("CreateView");
+          break;
+        case SHOW_VIEW_ACL:
+          action.push_back("ShowView");
+          break;
+        case CREATE_PROC_ACL:
+          action.push_back("CreateRoutines");
+          break;
+        case ALTER_PROC_ACL:
+          action.push_back("AlterRoutines");
+          break;
+        case EXECUTE_ACL:
+          action.push_back("Execute");
+          break;
+        default:
+          DBUG_PRINT("BTP", ("Unknown privilege: %d", i));
+          std::cout << "Unknown privilege: " << (priv & (1<<i)) << std::endl;
+          break;
+      }
+    }
+  }
+  return action;
+}
+
+std::string getDay() {
+  std::time_t currentTime = std::time(0);
+  std::tm* now = std::localtime(&currentTime);
+  char dayString[4];
+  std::strftime(dayString, sizeof(dayString), "%a", now);
+  std::string day(dayString);
+  std::transform(day.begin(), day.end(), day.begin(), ::tolower);
+  return day;
+}
+
+uint32_t getDate() {
+  // integer of the format YYYYMMDD
+  std::time_t currentTime = std::time(0);
+  std::tm* now = std::localtime(&currentTime);
+  char dateString[9];
+  std::strftime(dateString, sizeof(dateString), "%Y%m%d", now);
+  return std::stoul(dateString);
+}
+
+uint32_t getTime() {
+  std::time_t currentTime = std::time(0);
+  std::tm* now = std::localtime(&currentTime);
+  char timeString[9]; 
+  std::strftime(timeString, sizeof(timeString), "%H%M%S", now);
+  return std::stoul(timeString);
+}
+
+int check_access_abac(THD *thd, string user_hash_value, string object_hash_value, string db_name = "", ulong want_access = 0) {
+
+#if 1
+  DBUG_TRACE;
+
+  if (want_access == 0) {
+    return 1;
+  }
+
+  if (object_hash_value == "") {
+    // TODOBTP: Need to check for db access here ig
+    return 0;
+  }
+
+  std::cout << "  user_hash_value: " << user_hash_value << "\n";
+  std::cout << "  object_hash_value: " << object_hash_value << "\n";
+  std::cout << "  db_name: " << db_name << "\n";
+  std::cout << "  want_access: " << std::bitset<16>(want_access).to_string() << "\n";
+
+  int accept = 1;
+  auto actions = priv_to_action(want_access);
+  for (auto& act : actions) {
+    std::cout << "[check_access_abac] Checking access for Action: " << act << "\n";
+    // HTTP Client setup
+    httplib::Client cli("http://0.0.0.0:8180");
+
+    // Get the day of the access from the current timestamp of the system
+    std::string day = getDay();
+    auto date = getDate();
+    auto fmt_time = getTime();
+    Vio *vio = thd->get_protocol_classic()->get_vio();
+    char ip[INET6_ADDRSTRLEN];
+    uint16_t port;
+    if (!vio_peer_addr(vio, ip, &port, sizeof(ip))) {
+        printf("Client IP: %s, Port: %u\n", ip, port);
+    } else {
+        printf("Failed to retrieve client IP and port.\n");
+    }
+    std::string client_ip{ ip };
+    std::cout << "  day: " << day << "\n";
+    std::cout << "  date: " << date << "\n";
+    std::cout << "  time: " << fmt_time << "\n";
+    std::cout << "  client_ip: " << client_ip << "\n";
+
+    json request_body = {
+      {"principal", "User::\"" + user_hash_value + "\""},
+      {"action", "Action::\"" + act + "\""},
+      {"resource", "Table::\"" + object_hash_value + "\""},
+      {"context", {
+        {"day", day },
+        {"date", date },
+        {"time", fmt_time },
+        {"ip", {
+          {"__extn", {
+            {"fn", "ip"},
+            {"arg", client_ip}
+          }}
+        }}
+      }}
+    };
+
+    /*
+    "ip": {
+       "__extn": {
+           "fn": "ip",
+           "arg": "222.222.222.101"
+       }
+    }
+    */
+
+    // Send HTTP POST request
+    auto res = cli.Post("/v1/is_authorized", request_body.dump(), "application/json");
+    
+    // Check if request was successful
+    if (res && res->status == 200) {
+      json response_json = json::parse(res->body);
+      string decision = response_json["decision"];
+      auto errors = response_json["diagnostics"]["errors"];
+
+      std::cout << "[check_access_abac] Response: " << response_json.dump() << "\n";
+
+      if (errors.size() > 0) {
+        std::cout << "  Authorization Errors: \n";
+        for (auto& error : errors) {
+          std::cout << "    - " << error.dump() << std::endl;
+        }
+      }
+      if (decision == "Allow") {
+        accept *= 1;  // Access granted
+      } else {
+        accept *= 0;  // Access denied
+      }
+    } else {
+      if (res) {
+        DBUG_PRINT("BTP", ("Authorization request failed with status: %d", res->status));
+        auto err = res.error();
+        std::cout << "HTTP error: " << httplib::to_string(err) << std::endl;
+        if (res->body.length() > 0) {
+          DBUG_PRINT("BTP", ("Authorization Response: %s", res->body.c_str()));
+        }
+      }
+      accept *= 0;  // Error in request
+    }
+
+  }
+  return static_cast<bool>(accept);
+
+#else
   ulong db_access=0;
   ABAC_TREE_NODE* node = root;
 
@@ -2243,6 +2493,7 @@ int check_access_abac(ABAC_TREE_NODE* root, string user_hash_value, string objec
               user_hash_value.c_str(), node_attrib_name.c_str(), (int)db_access));
 
   return db_access;
+#endif
 }
 
 /**
@@ -2275,6 +2526,17 @@ int check_access_abac(ABAC_TREE_NODE* root, string user_hash_value, string objec
 bool check_access(THD *thd, ulong want_access, const char *db, ulong *save_priv,
                   GRANT_INTERNAL_INFO *grant_internal_info,
                   bool dont_check_global_grants, bool no_errors) {
+#if 0
+  // TODOBTP: Divert the access control to cedar
+
+  DBUG_TRACE;
+  DBUG_PRINT("BTP", ("want_access: %lu", want_access));
+
+
+  return 0;
+  
+  
+#else
   Security_context *sctx = thd->security_context();
   ulong db_access=0;
   const std::string &db_name = db ? db : "";
@@ -2419,12 +2681,12 @@ bool check_access(THD *thd, ulong want_access, const char *db, ulong *save_priv,
 
 
   string user_hash_value = sctx->priv_user().str;
-  user_hash_value.push_back('\0');
-  user_hash_value.append(sctx->priv_host().str);
-  user_hash_value.push_back('\0');
+  // user_hash_value.push_back('\0');
+  // user_hash_value.append(sctx->priv_host().str);
+  // user_hash_value.push_back('\0');
 
   ABAC_TREE_NODE* node = (*abac_tree)[string(db)];
-  db_access = check_access_abac(node, user_hash_value, "");
+  db_access = check_access_abac(thd, user_hash_value, "", string(db), want_access);
 
   DBUG_PRINT("info",
          ("5 db_access: %lu  want_access: %lu", db_access, want_access));
@@ -2475,6 +2737,7 @@ bool check_access(THD *thd, ulong want_access, const char *db, ulong *save_priv,
              sctx->priv_host().str,
              (db ? db : (thd->db().str ? thd->db().str : "unknown")));
   return true;
+#endif
 }
 
 
@@ -2517,6 +2780,15 @@ bool check_table_access(THD *thd, ulong requirements, TABLE_LIST *tables,
                         bool any_combination_of_privileges_will_do, uint number,
                         bool no_errors) {
   DBUG_TRACE;
+#if 0
+
+  // TODOBTP: Need to cut here to ask the server.
+  DBUG_PRINT("info", ("[BTP] check_table_access: %lu", requirements));
+
+
+
+  return true;
+#else
   TABLE_LIST *org_tables = tables;
   TABLE_LIST *first_not_own_table = thd->lex->first_not_own_table();
   uint i = 0;
@@ -2572,6 +2844,7 @@ bool check_table_access(THD *thd, ulong requirements, TABLE_LIST *tables,
 deny:
   thd->set_security_context(backup_ctx);
   return true;
+#endif
 }
 
 /**
@@ -2844,6 +3117,10 @@ int mysql_table_grant(THD *thd, TABLE_LIST *table_list,
         my_error(ER_TABLEACCESS_DENIED_ERROR, MYF(0), command,
                  thd->security_context()->priv_user().str,
                  thd->security_context()->host_or_ip().str, table_list->alias);
+        std::cout << "[mysql_table_grant] Error: " << command << " "
+                  << thd->security_context()->priv_user().str << " "
+                  << thd->security_context()->host_or_ip().str << " "
+                  << table_list->alias << std::endl;
         return true;
       }
     }
@@ -3874,6 +4151,25 @@ bool mysql_grant(THD *thd, const char *db, List<LEX_USER> &list, ulong rights,
 
 bool check_grant(THD *thd, ulong want_access, TABLE_LIST *tables,
                  bool any_combination_will_do, uint number, bool no_errors) {
+#if 0
+  // TODOBTP: Divert this to cedar
+  // Print user name
+  DBUG_PRINT("BTP", ("User: %s@%s", thd->security_context()->priv_user(),
+                      thd->security_context()->priv_host()));
+  // print tables
+  TABLE_LIST *tl;
+  for (tl = tables; tl; tl = tl->next_global) {
+    DBUG_PRINT("BTP", ("Table: %s.%s", tl->get_db_name(), tl->get_table_name()));
+  }
+
+  // Print want_access
+  DBUG_PRINT("BTP", ("want_access: %lu", want_access));
+  // Print number
+  DBUG_PRINT("BTP", ("number: %u", number));
+  // Print any_combination_will_do
+  return true;
+                      
+#else
   TABLE_LIST *tl;
   TABLE_LIST *const first_not_own_table = thd->lex->first_not_own_table();
   Security_context *sctx = thd->security_context();
@@ -3902,7 +4198,8 @@ bool check_grant(THD *thd, ulong want_access, TABLE_LIST *tables,
           t_ref->grant.privilege |= TMP_TABLE_ACLS;
           continue;
         case ACL_INTERNAL_ACCESS_DENIED:
-          goto err;
+        std::cout << "1. [check_grant] goto err; \n"  ;
+        goto err;
         case ACL_INTERNAL_ACCESS_CHECK_GRANT:
           break;
       }
@@ -3959,7 +4256,11 @@ bool check_grant(THD *thd, ulong want_access, TABLE_LIST *tables,
         DBUG_PRINT("info", ("Access denied for %s.%s. Unfulfilled access: %lu",
                             t_ref->get_db_name(), t_ref->get_table_name(),
                             want_access));
-        goto err;
+        std::cout << "[check_grant] Access denied for " << t_ref->get_db_name()
+                  << "." << t_ref->get_table_name() << ". Unfulfilled access: "
+                  << want_access << std::endl;
+        std::cout << "2. [check_grant] goto err; \n";
+                            goto err;
       }
     } else {
       /*
@@ -3995,18 +4296,18 @@ bool check_grant(THD *thd, ulong want_access, TABLE_LIST *tables,
 
 
       string user_hash_value = sctx->priv_user().str;
-      user_hash_value.push_back('\0');
-      user_hash_value.append(sctx->priv_host().str);
-      user_hash_value.push_back('\0');
+      // user_hash_value.push_back('\0');
+      // user_hash_value.append(sctx->priv_host().str);
+      // user_hash_value.push_back('\0');
 
       string tname_hash_value = std::string(db_name);
-      tname_hash_value.push_back('\0');
+      tname_hash_value.push_back('.');
       tname_hash_value.append(string(t_ref->get_table_name()));
-      tname_hash_value.push_back('\0');
+      // tname_hash_value.push_back('\0');
 
       ulong db_access=0;
       ABAC_TREE_NODE* node = (*abac_tree)["global"];
-      db_access = check_access_abac(node, user_hash_value, tname_hash_value);
+      db_access = check_access_abac(thd, user_hash_value, tname_hash_value, "global", want_access);
 
       GRANT_TABLE *abac_grant = nullptr;
 
@@ -4021,7 +4322,10 @@ bool check_grant(THD *thd, ulong want_access, TABLE_LIST *tables,
         DBUG_PRINT("info",
                    ("Table %s didn't exist in the legacy table acl cache",
                     t_ref->get_table_name()));
+        std::cout << "[check_grant] Table " << t_ref->get_table_name()
+                  << " didn't exist in the legacy table acl cache" << std::endl;
         want_access &= ~t_ref->grant.privilege;
+        std::cout << "3. [check_grant] goto err; \n";
         goto err;  // No grants
       } 
       else if (!grant_table) {
@@ -4035,19 +4339,29 @@ bool check_grant(THD *thd, ulong want_access, TABLE_LIST *tables,
       */
 
       if (any_combination_will_do) continue;
-
+#if 0
       t_ref->grant.grant_table = grant_table;  // Remember for column test
       t_ref->grant.version = grant_version;
       t_ref->grant.privilege |= grant_table->privs;
 
       DBUG_PRINT("info",
                  ("t_ref->grant.privilege = %lu", t_ref->grant.privilege));
-      if (!(~t_ref->grant.privilege & want_access)) continue;
+      std::cout << "[check_grant] t_ref->grant.privilege = "
+                << std::bitset<32>(t_ref->grant.privilege).to_string() << std::endl;
+      std::cout << "[check_grant] grant_table->cols = "
+                << std::bitset<32>(grant_table->cols).to_string() << std::endl;
+      std::cout << "[check_grant] want_access = " 
+                << std::bitset<32>(want_access).to_string() << std::endl;
 
       if (want_access & ~(grant_table->cols | t_ref->grant.privilege)) {
         want_access &= ~(grant_table->cols | t_ref->grant.privilege);
+        std::cout << "4. [check_grant] goto err; \n";
+        std::cout << "[check_grant] Access denied for " << t_ref->get_db_name()
+                  << "." << t_ref->get_table_name() << ". Unfulfilled access: "
+                  << std::bitset<32>(want_access).to_string() << std::endl;
         goto err;  // impossible
       }
+#endif
     }
   }
   return false;
@@ -4062,7 +4376,9 @@ err:
              sctx->priv_user().str, sctx->host_or_ip().str,
              tl ? tl->get_table_name() : "unknown");
   }
+  std::cout << "[check_grant] Error" << std::endl;
   return true;
+#endif
 }
 
 /*
@@ -4087,6 +4403,7 @@ err:
 bool check_grant_column(THD *thd, GRANT_INFO *grant, const char *db_name,
                         const char *table_name, const char *name, size_t length,
                         Security_context *sctx, ulong want_privilege) {
+  return false; // TODOBTP: Divert this to cedar
   GRANT_TABLE *grant_table;
   GRANT_COLUMN *grant_column;
   DBUG_TRACE;
@@ -4135,9 +4452,10 @@ bool check_grant_column(THD *thd, GRANT_INFO *grant, const char *db_name,
 err:
   char command[128];
   get_privilege_desc(command, sizeof(command), want_privilege);
+  std::cout << "[check_grant_column] Error" << std::endl;
   my_error(ER_COLUMNACCESS_DENIED_ERROR, MYF(0), command, sctx->priv_user().str,
            sctx->host_or_ip().str, name, table_name);
-  return true;
+  return false;
 }
 
 /**
@@ -4243,6 +4561,7 @@ bool check_column_grant_in_table_ref(THD *thd, TABLE_LIST *table_ref,
 */
 bool check_grant_all_columns(THD *thd, ulong want_access_arg,
                              Field_iterator_table_ref *fields) {
+  return false;
   Security_context *sctx = thd->security_context();
   ulong want_access = want_access_arg;
   const char *table_name = nullptr;
@@ -4324,6 +4643,7 @@ err:
     Do not give an error message listing a column name unless the user has
     privilege to see all columns.
   */
+  std::cout << "[check_grant_all_columns] ret: true" << std::endl;
   if (using_column_privileges)
     my_error(ER_TABLEACCESS_DENIED_ERROR, MYF(0), command,
              sctx->priv_user().str, sctx->host_or_ip().str, table_name);
@@ -4358,7 +4678,7 @@ static bool check_grant_db_routine(
       }
     }  // end for
 
-    // yha change krna h
+    // TODOBTP: yha change krna h
   }
 
   return true;
@@ -4490,9 +4810,9 @@ bool check_grant_db(THD *thd, const char *db) {
   }
 
   string user_hash_value = sctx->priv_user().str;
-  user_hash_value.push_back('\0');
-  user_hash_value.append(sctx->priv_host().str);
-  user_hash_value.push_back('\0');
+  // user_hash_value.push_back('\0');
+  // user_hash_value.append(sctx->priv_host().str);
+  // user_hash_value.push_back('\0');
 
 
   ulong db_access=0;
@@ -4583,22 +4903,22 @@ bool check_grant_routine(THD *thd, ulong want_access, TABLE_LIST *procs,
       }
 
       string user_hash_value = sctx->priv_user().str;
-      user_hash_value.push_back('\0');
-      user_hash_value.append(sctx->priv_host().str);
-      user_hash_value.push_back('\0');
+      // user_hash_value.push_back('\0');
+      // user_hash_value.append(sctx->priv_host().str);
+      // user_hash_value.push_back('\0');
 
       string tname_hash_value = string(table->db);
-      tname_hash_value.push_back('\0');
-      tname_hash_value.append(string(table->table_name));
-      tname_hash_value.push_back('\0');
+      tname_hash_value.push_back('.');
+      // tname_hash_value.append(string(table->table_name));
+      // tname_hash_value.push_back('\0');
 
       ulong db_access=0;
       ABAC_TREE_NODE* node = (*abac_tree)["global"];
-      db_access = check_access_abac(node, user_hash_value, tname_hash_value);
+      db_access = check_access_abac(thd, user_hash_value, tname_hash_value, "global", want_access);
 
 
       node = (*abac_tree)[string(table->db)];
-      db_access |= check_access_abac(node, user_hash_value, tname_hash_value);
+      db_access |= check_access_abac(thd, user_hash_value, tname_hash_value, string(table->db), want_access);
 
       table->grant.privilege |= db_access;
     }
@@ -4662,7 +4982,7 @@ static bool check_routine_level_acl(THD *thd, const char *db, const char *name,
   //                std::string(db), std::string(name))))
   //   no_routine_acl = no_routine_acl  & (!(grant_proc->privs & SHOW_PROC_ACLS));
 
-  //  yha change krna h
+  //  TODOBTP: yha change krna h
 
   return no_routine_acl;
 }
@@ -5036,6 +5356,7 @@ void get_privilege_access_maps(
 bool mysql_show_grants(THD *thd, LEX_USER *lex_user,
                        const List_of_auth_id_refs &using_roles,
                        bool show_mandatory_roles, bool have_using_clause) {
+  // TODOBTP: Do we need to make changes here?
   int error = 0;
   ACL_USER *acl_user = nullptr;
   char buff[1024];
@@ -5771,21 +6092,21 @@ void fill_effective_table_privileges(THD *thd, GRANT_INFO *grant,
     if (!acl_cache_lock.lock(false)) return;
 
     string user_hash_value = sctx->priv_user().str;
-    user_hash_value.push_back('\0');
-    user_hash_value.append(sctx->priv_host().str);
-    user_hash_value.push_back('\0');
+    // user_hash_value.push_back('\0');
+    // user_hash_value.append(sctx->priv_host().str);
+    // user_hash_value.push_back('\0');
 
     string tname_hash_value = string(db);
-    tname_hash_value.push_back('\0');
+    tname_hash_value.push_back('.');
     tname_hash_value.append(string(table));
-    tname_hash_value.push_back('\0');
+    // tname_hash_value.push_back('\0');
 
     ulong db_access=0;
     ABAC_TREE_NODE* node = (*abac_tree)["global"];
-    db_access = check_access_abac(node, user_hash_value, tname_hash_value);
+    db_access = check_access_abac(thd, user_hash_value, tname_hash_value, "global", 0);
 
     node = (*abac_tree)[string(db)];
-    db_access |= check_access_abac(node, user_hash_value, tname_hash_value);
+    db_access |= check_access_abac(thd, user_hash_value, tname_hash_value, string(db), 0);
 
     grant->privilege |= db_access;
 
@@ -7852,9 +8173,13 @@ bool check_system_user_privilege(THD *thd, List<LEX_USER> list) {
   return (false);
 }
 
+
+// TODOBTP: Change every function defined below to divert the access control to Cedar
+
 bool mysql_create_rule(THD *thd, std::string rule_name, int privs, 
       attribute_value_list user_attributes, 
-          attribute_value_list object_attributes, std::string weekday, std::string daytime) {
+      attribute_value_list object_attributes, 
+      std::string weekday, std::string daytime, std::string ip_spec) {
   DBUG_TRACE;
   int ret;
   Save_and_Restore_binlog_format_state binlog_format_state(thd);
@@ -7863,6 +8188,116 @@ bool mysql_create_rule(THD *thd, std::string rule_name, int privs,
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
   
+	std::cout << "[mysql_create_rule] rule_name: " << rule_name << std::endl;
+	std::cout << "  privs: " << std::bitset<32>(privs) << std::endl;
+	std::cout << "  user_attributes: " << std::endl;
+	for (auto it = user_attributes.attributes->begin(); it != user_attributes.attributes->end(); it++) {
+		std::cout << "    " << std::string(it->str) << std::endl;
+	}
+	std::cout << "  object_attributes: " << std::endl;
+	for (auto it = object_attributes.attributes->begin(); it != object_attributes.attributes->end(); it++) {
+		std::cout << "    " << std::string(it->str) << std::endl;
+	}
+	std::cout << "  weekday: " << weekday << std::endl;
+	std::cout << "  daytime: " << daytime << std::endl;
+  std::cout << "  ip_spec: " << ip_spec << std::endl;
+
+/*
+permit (
+  principal,
+  action == Action::"Select",
+  resource
+)
+when
+{
+  principal.clearance_level == "top_secret" &&
+  resource.data_classification == "sensitive"
+};
+*/
+
+/*
+    {
+      "id": "manager_access",
+      "content": "permit(\n  principal,\n  action == Action::\"Select\",\n  resource\n)\nwhen {\n  principal has user_role && principal.user_role == \"manager\" &&\n  resource has data_classification && resource.data_classification == \"sensitive\"\n};"
+    },
+*/
+
+	std::string attribute_value_conditions = "";
+	auto user_attr_it = user_attributes.attributes->begin();
+	auto user_attr_val_it = user_attributes.values->begin();
+	for (; user_attr_it != user_attributes.attributes->end(); user_attr_it++, user_attr_val_it++) {
+    attribute_value_conditions += "principal has " + std::string(user_attr_it->str) + " && ";
+		attribute_value_conditions += "principal." + std::string(user_attr_it->str) + " == \"" + std::string(user_attr_val_it->str) + "\" && ";
+	}
+	auto object_attr_it = object_attributes.attributes->begin();
+	auto object_attr_val_it = object_attributes.values->begin();
+	for (; object_attr_it != object_attributes.attributes->end(); object_attr_it++, object_attr_val_it++) {
+    attribute_value_conditions += "resource has " + std::string(object_attr_it->str) + " && ";
+		attribute_value_conditions += "resource." + std::string(object_attr_it->str) + " == \"" + std::string(object_attr_val_it->str) + "\" && ";
+	}
+	attribute_value_conditions = attribute_value_conditions.substr(0, attribute_value_conditions.length() - 4); // remove last " && "
+	std::cout << "  attribute_value_conditions: " << attribute_value_conditions << std::endl;
+	std::string action = ""; // TODOBTP: Action is also to be set using the `privs`
+  auto actions = priv_to_action(privs);
+  for (auto act: actions) {
+    if (act == "") continue;
+    action += "Action::\"" + act + "\", ";
+  }
+  action = action.substr(0, action.length() - 2); // remove last ", "
+
+  std::cout << "  actions.size: " << actions.size() << "\n"; 
+  std::cout << "  actions: " << action << "\n";   
+  std::cout << "  action_list: ";
+  for (auto act: actions) {
+    std::cout << act << ", ";
+  }
+  std::cout << std::endl;
+
+  // context information
+  std::string context_conditions = "";
+  if (weekday == "weekday") {
+    context_conditions += "[\"mon\", \"tue\", \"wed\", \"thu\", \"fri\"].contains(context.day) && ";
+  } else if (weekday == "weekend") {
+    context_conditions += "[\"sat\", \"sun\"].contains(context.day) && ";
+  }
+  if (daytime == "day") {
+    context_conditions += "(context.time >= 90000 && context.time <= 210000) && ";
+  } else if (daytime == "night") {
+    context_conditions += "(context.time < 90000 || context.time > 210000) && ";
+  }
+  if (ip_spec != "") {
+    context_conditions += "context.ip.isInRange(ip(\"" + ip_spec + "\")) && ";
+  }
+
+  context_conditions = context_conditions.substr(0, context_conditions.length() - 4); // remove last " && "
+  std::cout << "  context_conditions: " << context_conditions << std::endl;
+  
+  // TODOBTP: IP address restrictions
+
+  	
+	httplib::Client cli("http://0.0.0.0:8180");
+	json body {
+		{"id", rule_name},
+		{"content", "permit(principal, action in"
+      " [" + action + "]" 
+      ",resource) when { " + 
+			attribute_value_conditions + " && " +
+      context_conditions +
+			"};"
+		}
+	};
+
+  auto res = cli.Post("/v1/policies", body.dump(), "application/json");
+  if (res) {
+    std::cout << "Response status code: " << res->status << std::endl;
+    std::cout << "Response body: " << res->body << std::endl;
+  } else {
+    std::cout << "Error: " << res.error() << std::endl;
+    my_error(ER_FAILED_CREATE_RULE, MYF(0));
+  }
+
+
+#if 0  
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
   
@@ -7959,7 +8394,7 @@ bool mysql_create_rule(THD *thd, std::string rule_name, int privs,
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   } /* Critical section */
-
+#endif
   if (!errors) {
     my_ok(thd);
     abac_reload(thd, false);
@@ -7979,7 +8414,19 @@ bool mysql_create_rule_db(THD *thd, std::string rule_name, std::string db_name, 
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
   bool exists = false;
+
+	std::cout << "[mysql_create_rule_db] rule_name: " << rule_name << std::endl;
+	std::cout << "  db_name: " << db_name << std::endl;
+	std::cout << "  privs: " << std::bitset<32>(privs) << std::endl;
+	std::cout << "  user_attributes: " << std::endl;
+	for (auto it = user_attributes.attributes->begin(); it != user_attributes.attributes->end(); it++) {
+		std::cout << "    " << std::string(it->str) << std::endl;
+	}
+	std::cout << "  weekday: " << weekday << std::endl;
+	std::cout << "  daytime: " << daytime << std::endl;
+
   
+#if 0
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
   
@@ -8075,7 +8522,7 @@ bool mysql_create_rule_db(THD *thd, std::string rule_name, std::string db_name, 
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   } /* Critical section */
-
+#endif
   if (!errors) {
     my_ok(thd);
     abac_reload(thd, false);
@@ -8094,7 +8541,20 @@ bool mysql_delete_rule(THD *thd, std::string rule_name) {
   TABLE *table = nullptr;
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
-  
+
+  httplib::Client cli("http://0.0.0.0:8180");
+
+  auto res = cli.Delete("/v1/policies/" + rule_name);
+  // Check if request was successful
+  if (res && res->status == 200) {
+    std::cout << "[mysql_delete_rule] Rule deleted successfully" << std::endl;
+  } else {
+    std::cout << "[mysql_delete_rule] Failed to delete rule" << std::endl;
+    my_error(ER_FAILED_DELETE_RULE, MYF(0));
+    return true;
+  }
+
+#if 0  
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
   
@@ -8186,7 +8646,7 @@ bool mysql_delete_rule(THD *thd, std::string rule_name) {
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();    
   } /* Critical section */
-
+#endif
   if (!errors) {
     my_ok(thd);
     abac_reload(thd, false);
@@ -8198,6 +8658,7 @@ bool mysql_delete_rule(THD *thd, std::string rule_name) {
 
 bool mysql_create_user_attribute(THD *thd, std::string user_attrib) {
   DBUG_TRACE;
+  std::cout << "[mysql_create_user_attribute] Creating user attribute: " << user_attrib << std::endl;
   int ret;
   Save_and_Restore_binlog_format_state binlog_format_state(thd);
   bool transactional_tables;
@@ -8205,6 +8666,37 @@ bool mysql_create_user_attribute(THD *thd, std::string user_attrib) {
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
 
+  // TODOBTP: Send a request to Cedar to create the user attribute
+
+  httplib::Client cli("http://0.0.0.0:8180");
+  
+  json request_body = {
+    {"name", user_attrib},
+    {"attr_type", "String"},
+    {"required", false}
+  };
+
+  auto res = cli.Post("/v1/schema/user/attribute", request_body.dump(), "application/json");
+
+  // Check if request was successful
+  if (res && res->status == 200) {
+    std::cout << "[mysql_create_user_attribute] User attribute created successfully" << std::endl;
+    std::cout << "  Cedar response: " << res->body << std::endl;
+
+  } else {
+    if (res) {
+      std::cout << "  HTTP status code: " << res->status << std::endl;
+      auto err = res.error();
+      std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+      if (res->body.length() > 0) {
+        std::cout << "  Cedar response: " << res->body << std::endl;
+      }
+    }
+    errors = true;
+    my_error(ER_FAILED_CREATE_ATTRIBUTE, MYF(0), user_attrib.c_str());
+  }
+
+#if 0
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
   
@@ -8235,10 +8727,9 @@ bool mysql_create_user_attribute(THD *thd, std::string user_attrib) {
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   }   /* Critical section */
-
+#endif
   if (!errors) {
     my_ok(thd);
-    abac_reload(thd, false);
   }
 
   return errors;
@@ -8253,6 +8744,37 @@ bool mysql_create_object_attribute(THD *thd, std::string object_attrib) {
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
 
+  std::cout << "[mysql_create_object_attribute] Creating object attribute: " << object_attrib << std::endl;
+
+  httplib::Client cli("http://0.0.0.0:8180");
+
+  json request_body = {
+    {"name", object_attrib},
+    {"attr_type", "String"},
+    {"required", false}
+  };
+
+  auto res = cli.Post("/v1/schema/resource/attribute", request_body.dump(), "application/json");
+  
+  // Check if request was successful
+  if (res && res->status == 200) {
+    std::cout << "[mysql_create_object_attribute] Object attribute created successfully" << std::endl;
+    std::cout << "  Cedar response: " << res->body << std::endl;
+
+  } else {
+    if (res) {
+      std::cout << "  HTTP status code: " << res->status << std::endl;
+      auto err = res.error();
+      std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+      if (res->body.length() > 0) {
+        std::cout << "  Cedar response: " << res->body << std::endl;
+      }
+    }
+    errors = true;
+    my_error(ER_FAILED_CREATE_ATTRIBUTE, MYF(0), object_attrib.c_str());
+  }
+
+#if 0
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
   
@@ -8282,10 +8804,9 @@ bool mysql_create_object_attribute(THD *thd, std::string object_attrib) {
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   }   /* Critical section */
-
+#endif
   if (!errors) {
     my_ok(thd);
-    abac_reload(thd, false);
   }
 
   return errors;
@@ -8299,6 +8820,31 @@ bool mysql_delete_user_attribute(THD *thd, std::string user_attrib) {
   TABLE *table = nullptr;
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
+  std::cout << "[mysql_delete_user_attribute] Deleting user attribute: " << user_attrib << std::endl;
+  // TODOBTP: Send a request to Cedar to delete the user attribute
+
+  httplib::Client cli("http://0.0.0.0:8180");
+  auto res = cli.Delete("/v1/schema/user/attribute/" + user_attrib);
+  
+  // Check if request was successful
+  if (res && res->status == 204) {
+    std::cout << "[mysql_delete_user_attribute] User attribute deleted successfully" << std::endl;
+    std::cout << "  Cedar response: " << res->body << std::endl;
+
+  } else {
+    if (res) {
+      std::cout << "  HTTP status code: " << res->status << std::endl;
+      auto err = res.error();
+      std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+      if (res->body.length() > 0) {
+        std::cout << "  Cedar response: " << res->body << std::endl;
+      }
+    }
+    errors = true;
+    my_error(ER_FAILED_DELETE_ATTRIBUTE, MYF(0), user_attrib.c_str());
+  }
+
+#if 0
 
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
@@ -8329,6 +8875,8 @@ bool mysql_delete_user_attribute(THD *thd, std::string user_attrib) {
       get_global_acl_cache()->increase_version();
   }   /* Critical section */
 
+#endif
+
   if (!errors) {
     my_ok(thd);
     abac_reload(thd, false);
@@ -8347,6 +8895,30 @@ bool mysql_delete_object_attribute(THD *thd, std::string object_attrib) {
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
 
+  std::cout << "[mysql_delete_object_attribute] Deleting object attribute: " << object_attrib << std::endl;
+
+  // TODOBTP: Send a request to Cedar to delete the object attribute
+  httplib::Client cli("http://0.0.0.0:8180");
+  auto res = cli.Delete("/v1/schema/resource/attribute/" + object_attrib);
+  // Check if request was successful
+  if (res && res->status == 204) {
+    std::cout << "[mysql_delete_object_attribute] Object attribute deleted successfully" << std::endl;
+    std::cout << "  Cedar response: " << res->body << std::endl;
+
+  } else {
+    if (res) {
+      std::cout << "  HTTP status code: " << res->status << std::endl;
+      auto err = res.error();
+      std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+      if (res->body.length() > 0) {
+        std::cout << "  Cedar response: " << res->body << std::endl;
+      }
+    }
+    errors = true;
+    my_error(ER_FAILED_DELETE_ATTRIBUTE, MYF(0), object_attrib.c_str());
+  }
+
+#if 0
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
   
@@ -8375,6 +8947,7 @@ bool mysql_delete_object_attribute(THD *thd, std::string object_attrib) {
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   }   /* Critical section */
+#endif 
 
   if (!errors) {
     my_ok(thd);
@@ -8405,6 +8978,50 @@ bool mysql_grant_user_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING val
   bool errors = false;
   List_iterator<LEX_USER> users_it(const_cast<List<LEX_USER> &>(*user_list));
   LEX_USER *lex_user;
+
+  httplib::Client cli("http://0.0.0.0:8180");
+
+  std::cout << "[mysql_grant_user_attribute] Granting user attribute: " << attrib_name.str << ", value: " << value.str << std::endl;
+  while((lex_user = users_it++)) {
+    if (lex_user->user.str == nullptr) {
+      lex_user = get_current_user(thd, lex_user);
+    } else if (lex_user->user.length == 0 || *(lex_user->user.str) == '\0') {
+      my_error(ER_FAILED_USER_ATTRIBUTE_GRANT, MYF(0), lex_user->user.str, lex_user->host.str);
+      std::cerr << "Failed to grant user attribute: " << attrib_name.str << std::endl;
+      errors = true;
+      break;
+    }
+
+    std::cout << "  to user: " << lex_user->user.str << ", host: " << lex_user->host.str << std::endl;
+
+    json request_body = {
+      {"entity_type", "User"},
+      {"entity_id", std::string(lex_user->user.str)},
+      {"attribute_name", std::string(attrib_name.str)},
+      {"attribute_value", std::string(value.str)}
+    };
+
+    auto res = cli.Put("/v1/data/attribute", request_body.dump(), "application/json");
+    // Check if request was successful
+    if (res && res->status == 200) {
+      std::cout << "[mysql_grant_user_attribute] User attribute granted successfully" << std::endl;
+      std::cout << "  Cedar response: " << res->body << std::endl;
+
+    } else {
+      if (res) {
+        std::cout << "  HTTP status code: " << res->status << std::endl;
+        auto err = res.error();
+        std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+        if (res->body.length() > 0) {
+          std::cout << "  Cedar response: " << res->body << std::endl;
+        }
+      }
+      errors = true;
+      my_error(ER_FAILED_USER_ATTRIBUTE_GRANT, MYF(0), lex_user->user.str, lex_user->host.str);
+    }
+  }
+
+#if 0
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
 
@@ -8460,6 +9077,7 @@ bool mysql_grant_user_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING val
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   }       /* Crititcal section */
+#endif
 
   if (!errors) {
     my_ok(thd);
@@ -8491,7 +9109,53 @@ bool mysql_grant_object_attribute(THD *thd, LEX_STRING attrib_name,
   TABLE *table = nullptr;
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
+
+  std::cout << "[mysql_grant_object_attribute] Granting object attribute: " << attrib_name.str << ", value: " << value.str << std::endl;
+  List_iterator<LEX_CSTRING> dbs_it(const_cast<List<LEX_CSTRING> &>(*dbs));
+  List_iterator<LEX_CSTRING> table_list_it(const_cast<List<LEX_CSTRING> &>(*table_list));
+  LEX_CSTRING *db_name;
+  LEX_CSTRING *table_name;
+
+  httplib::Client cli("http://0.0.0.0:8180");
+
+  while((db_name = dbs_it++) && (table_name = table_list_it++)) {
+    if (!db_name->length || !table_name->length) {
+      my_error(ER_EMPTY_TABLE_OR_DB_NAME, MYF(0));
+      errors = true;
+      break;
+    }
+
+    std::cout << "  to db: " << db_name->str << ", table: " << table_name->str << std::endl;
+    
+    json request_body = {
+      {"entity_type", "Table"},
+      {"entity_id", std::string(db_name->str) + "." + std::string(table_name->str)},
+      {"attribute_name", std::string(attrib_name.str)},
+      {"attribute_value", std::string(value.str)}
+    };
+
+    auto res = cli.Put("/v1/data/attribute", request_body.dump(), "application/json");
+    // Check if request was successful
+    if (res && res->status == 200) {
+      std::cout << "[mysql_grant_object_attribute] Object attribute granted successfully" << std::endl;
+      std::cout << "  Cedar response: " << res->body << std::endl;
+
+    } else {
+      if (res) {
+        std::cout << "  HTTP status code: " << res->status << std::endl;
+        auto err = res.error();
+        std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+        if (res->body.length() > 0) {
+          std::cout << "  Cedar response: " << res->body << std::endl;
+        }
+      }
+      errors = true;
+      my_error(ER_FAILED_RESOURCE_ATTRIBUTE_GRANT, MYF(0), db_name->str, table_name->str);
+    }
+
+  }
   
+#if 0
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
 
@@ -8568,7 +9232,7 @@ bool mysql_grant_object_attribute(THD *thd, LEX_STRING attrib_name,
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   }       /* Crititcal section */
-
+#endif
   if (!errors) {
     my_ok(thd);
     abac_reload(thd, false);
@@ -8589,6 +9253,46 @@ bool mysql_revoke_user_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING *v
   bool errors = false;
   List_iterator<LEX_USER> users_it(const_cast<List<LEX_USER> &>(*user_list));
   LEX_USER *lex_user;
+  
+  std::cout << "[mysql_revoke_user_attribute] Revoking user attribute: " << attrib_name.str << std::endl;
+  httplib::Client cli("http://0.0.0.0:8180");
+  
+  while((lex_user = users_it++)) {
+    if (lex_user->user.str == nullptr) {
+      lex_user = get_current_user(thd, lex_user);
+    } else if (lex_user->user.length == 0 || *(lex_user->user.str) == '\0') {
+      my_error(ER_FAILED_REVOKE_USER_ATTRIBUTE, MYF(0), lex_user->user.str, lex_user->host.str);
+      std::cerr << "Failed to revoke user attribute: " << attrib_name.str << std::endl;
+      errors = true;
+      break;
+    }
+
+    std::cout << "  from user: " << lex_user->user.str << ", host: " << lex_user->host.str << std::endl;
+    json request_body = {
+      {"entity_type", "User"},
+      {"entity_id", std::string(lex_user->user.str)},
+      {"attribute_name", std::string(attrib_name.str)}
+    };
+    auto res = cli.Delete("/v1/data/attribute", request_body.dump(), "application/json");
+    // Check if request was successful
+    if (res && res->status == 200) {
+      std::cout << "[mysql_revoke_user_attribute] User attribute revoked successfully" << std::endl;
+      std::cout << "  Cedar response: " << res->body << std::endl;
+
+    } else {
+      if (res) {
+        std::cout << "  HTTP status code: " << res->status << std::endl;
+        auto err = res.error();
+        std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+        if (res->body.length() > 0) {
+          std::cout << "  Cedar response: " << res->body << std::endl;
+        }
+      }
+      errors = true;
+      my_error(ER_FAILED_REVOKE_USER_ATTRIBUTE, MYF(0), lex_user->user.str, lex_user->host.str);
+    }
+  }
+#if 0
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
 
@@ -8648,7 +9352,7 @@ bool mysql_revoke_user_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING *v
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   }       /* Crititcal section */
-
+#endif
   if (!errors) {
     my_ok(thd);
     abac_reload(thd, false);
@@ -8667,7 +9371,51 @@ bool mysql_revoke_object_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING 
   TABLE *table = nullptr;
   TABLE_LIST tables[ACL_TABLES::LAST_ENTRY];
   bool errors = false;
-  
+
+  std::cout << "[mysql_revoke_object_attribute] Revoking object attribute: " << attrib_name.str << std::endl;
+  List_iterator<LEX_CSTRING> dbs_it(const_cast<List<LEX_CSTRING> &>(*dbs));
+  List_iterator<LEX_CSTRING> table_list_it(const_cast<List<LEX_CSTRING> &>(*table_list));
+  LEX_CSTRING *db_name;
+  LEX_CSTRING *table_name;
+
+  httplib::Client cli("http://0.0.0.0:8180");
+
+  while((db_name = dbs_it++) && (table_name = table_list_it++)) {
+    if (!db_name->length || !table_name->length) {
+      my_error(ER_EMPTY_TABLE_OR_DB_NAME, MYF(0));
+      errors = true;
+      break;
+    }
+
+    std::cout << "  from db: " << db_name->str << ", table: " << table_name->str << std::endl;
+
+    json request_body = {
+      {"entity_type", "Table"},
+      {"entity_id", std::string(db_name->str) + "." + std::string(table_name->str)},
+      {"attribute_name", std::string(attrib_name.str)}
+    };
+
+    auto res = cli.Delete("/v1/data/attribute", request_body.dump(), "application/json");
+    // Check if request was successful
+    if (res && res->status == 200) {
+      std::cout << "[mysql_revoke_object_attribute] Object attribute revoked successfully" << std::endl;
+      std::cout << "  Cedar response: " << res->body << std::endl;
+
+    } else {
+      if (res) {
+        std::cout << "  HTTP status code: " << res->status << std::endl;
+        auto err = res.error();
+        std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+        if (res->body.length() > 0) {
+          std::cout << "  Cedar response: " << res->body << std::endl;
+        }
+      }
+      errors = true;
+      my_error(ER_FAILED_REVOKE_RESOURCE_ATTRIBUTE, MYF(0), db_name->str, table_name->str);
+    }
+  }
+
+#if 0
   if ((ret = open_grant_tables(thd, tables, &transactional_tables))) 
     return ret != 1;
 
@@ -8721,7 +9469,7 @@ bool mysql_revoke_object_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING 
       errors = log_and_commit_acl_ddl(thd, transactional_tables);
       get_global_acl_cache()->increase_version();
   }         /* Crititcal section */
-
+#endif
   if (!errors) {
     my_ok(thd);
     abac_reload(thd, false);
@@ -8729,4 +9477,83 @@ bool mysql_revoke_object_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING 
   }
 
   return errors;
+}
+
+bool mysql_abac_create_user(THD *thd, List<LEX_USER> &list) {
+  std::cout << "[mysql_abac_create_user] Creating user" << std::endl;
+  LEX_USER *lex_user;
+  List_iterator<LEX_USER> users_it(list);
+
+  httplib::Client cli("http://0.0.0.0:8180");
+  while((lex_user = users_it++)) {
+    if (lex_user->user.str == nullptr) {
+      lex_user = get_current_user(thd, lex_user);
+    }
+    std::cout << "  user: " << lex_user->user.str << ", host: " << lex_user->host.str << std::endl;
+
+    json request_body = {
+      {"entity_type", "User"},
+      {"entity_id", std::string(lex_user->user.str)}
+    };
+
+    auto res = cli.Put("/v1/data/entity", request_body.dump(), "application/json");
+    // Check if request was successful
+    if (res && res->status == 200) {
+      std::cout << "[mysql_abac_create_user] User created successfully" << std::endl;
+      std::cout << "  Cedar response: " << res->body << std::endl;
+
+    } else {
+      if (res) {
+        std::cout << "  HTTP status code: " << res->status << std::endl;
+        auto err = res.error();
+        std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+        if (res->body.length() > 0) {
+          std::cout << "  Cedar response: " << res->body << std::endl;
+        }
+      }
+      return false;
+    }
+      
+  } 
+  return true;
+}
+
+bool mysql_abac_create_table(THD *thd, TABLE_LIST *table_list) {
+  DBUG_TRACE;
+  
+  httplib::Client cli("http://0.0.0.0:8180");
+  for (TABLE_LIST* table = table_list; table != nullptr; table = table->next_local) {
+    std::string_view db_name{table->db};
+    std::string_view table_name{table->table_name};
+    
+    if (db_name == "mysql" || db_name == "performance_schema" || 
+      db_name == "sys" || db_name == "information_schema") {
+        continue;
+      }
+      
+      std::cout << "  db: " << db_name << ", table: " << table_name << std::endl;
+      
+      json request_body = {
+        {"entity_type", "Table"},
+      {"entity_id", std::string(db_name) + "." + std::string(table_name)}
+    };
+    
+    auto res = cli.Put("/v1/data/entity", request_body.dump(), "application/json");
+    // Check if request was successful
+    if (res && res->status == 200) {
+      std::cout << "[mysql_abac_create_table] Table entity created successfully" << std::endl;
+      std::cout << "  Cedar response: " << res->body << std::endl;
+    } else {
+      if (res) {
+        std::cout << "  HTTP status code: " << res->status << std::endl;
+        auto err = res.error();
+        std::cout << "  HTTP error: " << httplib::to_string(err) << std::endl;
+        if (res->body.length() > 0) {
+          std::cout << "  Cedar response: " << res->body << std::endl;
+        }
+      }
+    }
+  }
+  
+  return true;
 }

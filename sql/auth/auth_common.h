@@ -924,7 +924,8 @@ bool mysql_revoke_role(THD *thd, const List<LEX_USER> *users,
                        const List<LEX_USER> *roles);
 bool mysql_create_rule(THD *thd, std::string rule_name, int privs, 
       attribute_value_list user_attributes, 
-          attribute_value_list object_attributes, std::string weekday, std::string daytime);
+      attribute_value_list object_attributes, std::string weekday, std::string daytime,
+      std::string ip_spec);
 bool mysql_create_rule_db(THD *thd, std::string rule_name, std::string db_name, int privs,
       attribute_value_list user_attributes,std::string weekday, std::string daytime);
 bool mysql_delete_rule(THD *thd, std::string rule_name);
@@ -940,6 +941,8 @@ bool mysql_revoke_user_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING *v
       List<LEX_USER> *user_list);
 bool mysql_revoke_object_attribute(THD *thd, LEX_STRING attrib_name, LEX_STRING *value_ptr,
       List<LEX_CSTRING> *dbs, List<LEX_CSTRING> *table_list);
+bool mysql_abac_create_user(THD *thd, List<LEX_USER> &list);
+bool mysql_abac_create_table(THD *thd, TABLE_LIST *table_list);
 void get_default_roles(const Auth_id_ref &user, List_of_auth_id_refs &list);
 
 bool is_granted_table_access(THD *thd, ulong required_acl, TABLE_LIST *table);

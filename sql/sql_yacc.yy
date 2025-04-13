@@ -2174,6 +2174,10 @@ void warn_about_deprecated_binary(THD *thd)
 
 %type <lex_str_ptr> opt_attrib_val
 
+
+%type <lexer.lex_str> env_token
+%type <lexer.lex_str> opt_env_token
+
 %%
 
 /*
@@ -3428,9 +3432,9 @@ create_resource_group_stmt:
 create_rule_stmt:
           CREATE RULE_SYM ident FOR_SYM privilege_list
           OF_SYM USER ATTRIBUTE_SYM '(' user_attribute_list ')' AND_SYM 
-          RESOURCE_SYM ATTRIBUTE_SYM '(' object_attribute_list ')' AND_SYM ENVIRONMENT_SYM ATTRIBUTE_SYM '(' ident ',' ident ')'
+          RESOURCE_SYM ATTRIBUTE_SYM '(' object_attribute_list ')' AND_SYM ENVIRONMENT_SYM ATTRIBUTE_SYM '(' env_token ',' env_token opt_comma opt_env_token ')'
           {
-            $$ = NEW_PTN PT_create_rule(string($3.str), $5, $10, $16, string($22.str), string($24.str));
+            $$ = NEW_PTN PT_create_rule(string($3.str), $5, $10, $16, string($22.str), string($24.str), ($26.str && $26.length > 0) ? string($26.str) : "");
           }
           |
           CREATE RULE_SYM ident FOR_SYM privilege_create_list
@@ -3439,6 +3443,17 @@ create_rule_stmt:
             $$ = NEW_PTN PT_create_rule_db(string($3.str), string($21.str), $5, $10, string($16.str), string($18.str));
           }
         ;
+
+
+opt_env_token:
+      /* empty */           { $$ = NULL_STR; }
+    | env_token             { $$ = $1; }
+;
+
+env_token:
+      ident                    { $$ = $1; }
+    | TEXT_STRING_literal      { $$ = $1; }
+;
 
 user_attribute_list:
           attrib_val_pair

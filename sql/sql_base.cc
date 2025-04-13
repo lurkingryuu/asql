@@ -1076,7 +1076,7 @@ OPEN_TABLE_LIST *list_open_tables(THD *thd, const char *db, const char *wild) {
     table_list.db = start->db;
     table_list.table_name = start->table;
     table_list.grant.privilege = 0;
-
+    // TODOBTP: need to change inside the table access
     if (check_table_access(thd, SELECT_ACL, &table_list, true, 1, true)) {
       /* Unlink OPEN_TABLE_LIST */
       if (start == open_list) {

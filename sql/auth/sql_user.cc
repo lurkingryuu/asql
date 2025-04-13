@@ -2888,6 +2888,9 @@ bool mysql_create_user(THD *thd, List<LEX_USER> &list, bool if_not_exists,
     acl_notify_htons(thd, SQLCOM_CREATE_USER, &list);
   }
 
+  // TODOBTP: Send to cedar server the user name.
+  mysql_abac_create_user(thd, list);
+
   if (result == 0) {
     if (generated_passwords.size() == 0) {
       my_ok(thd);

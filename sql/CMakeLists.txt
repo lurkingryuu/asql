@@ -882,7 +882,9 @@ ADD_DEPENDENCIES(sql_main GenBootstrapPriv)
 ADD_DEPENDENCIES(sql_main GenSysSchema)
 TARGET_LINK_LIBRARIES(sql_main ${MYSQLD_STATIC_PLUGIN_LIBS}
   mysql_server_component_services mysys strings vio
-  binlogevents_static ${LIBWRAP} ${LIBDL} ${SSL_LIBRARIES})
+  binlogevents_static ${LIBWRAP} ${LIBDL} ${SSL_LIBRARIES}
+  curl
+  )
 
 # sql/immutable_string.h uses
 # google::protobuf::io::CodedOutputStream::WriteVarint64ToArray
@@ -1157,7 +1159,7 @@ ENDIF()
 SET_TARGET_PROPERTIES(mysqld PROPERTIES ENABLE_EXPORTS TRUE)
 TARGET_LINK_LIBRARIES(mysqld
   sql_main sql_gis binlog rpl master slave sql_dd mysys
-  minchassis binlogevents_static ${ICU_LIBRARIES})
+  minchassis binlogevents_static ${ICU_LIBRARIES} curl)
 
 # Add dependency on ldap library, to ensure it is not unloaded
 # when we shutdown the authentication plugin.

@@ -2887,8 +2887,8 @@ class PT_create_rule final : public Parse_tree_root {
   public:
   PT_create_rule(string rule_name, int privs, 
       attribute_value_list user_attributes, 
-          attribute_value_list object_attributes, string weekday, string daytime) : sql_cmd(rule_name, privs,
-              user_attributes, object_attributes, weekday, daytime) {}
+          attribute_value_list object_attributes, string weekday, string daytime, string ip_spec) : sql_cmd(rule_name, privs,
+              user_attributes, object_attributes, weekday, daytime, ip_spec) {}
 
   Sql_cmd *make_cmd(THD *thd) override;
 };

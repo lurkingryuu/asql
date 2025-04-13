@@ -9811,6 +9811,8 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
 
   dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
 
+  mysql_abac_create_table(thd, create_table);
+
   if (create_info->m_transactional_ddl) {
     /*
       Stop if START TRANSACTION is requested on table with engine that
