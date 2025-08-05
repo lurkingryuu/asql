@@ -13,6 +13,7 @@ set -e  # Exit immediately if a command fails
 NO_BUILD=0
 NO_TEST=0
 NO_CLEAN=0
+PROFILE_NUM=0
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -29,6 +30,10 @@ while [[ $# -gt 0 ]]; do
             NO_CLEAN=1
             shift
             ;;
+        --profile)
+            PROFILE_NUM="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -41,6 +46,8 @@ MYSQL_INSTALL_DIR="/usr/local/mysql"
 MYSQL_BUILD_DIR="$HOME/mysql-server-ext/build"
 MYSQL_DATA_DIR="$MYSQL_BUILD_DIR/data"
 DEBUG_LOG="/tmp/mysql_debug_trace.log"
+PROFILE_OUT_DIR="$HOME/mysql-server-ext/profile_out"
+PROFILE_OUT="$PROFILE_OUT_DIR/profile_$PROFILE_NUM.tsv"
 
 # Clean up MySQL installation
 if [ "$NO_CLEAN" -eq 0 ]; then
@@ -83,7 +90,7 @@ if [ "$NO_BUILD" -eq 0 ]; then
         -DWITH_DEBUG=0 -DCMAKE_LINKER=lld
 
     num_cores=$(nproc)
-    num_cores=$((num_cores - 4))
+    num_cores=$((num_cores - 6))
     echo "### Building MySQL with $num_cores cores ###"
     make -j"$num_cores"
 
@@ -144,43 +151,56 @@ echo "### MySQL Server is Running! ###"
 
 
 test_all_features() {
+mysql -u root --skip-password -e "UPDATE performance_schema.setup_actors SET ENABLED = 'NO', HISTORY = 'NO' WHERE HOST = '%' AND USER = '%';"
+mysql -u root --skip-password -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','root','%','YES','YES');"
+mysql -u root --skip-password -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_alice','%','YES','YES');"
+mysql -u root --skip-password -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_bob','%','YES','YES');"
+mysql -u root --skip-password -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_charlie','%','YES','YES');"
+mysql -u root --skip-password -e "SELECT * FROM performance_schema.setup_actors;"
+mysql -u root --skip-password -e "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%statement/%';"
+mysql -u root --skip-password -e "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%stage/%';"
+mysql -u root --skip-password -e "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME LIKE '%events_statements_%';"
+mysql -u root --skip-password -e "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME LIKE '%events_stages_%';"
+
 mysql -u root --skip-password -e "CREATE USER 'user_alice'@'localhost' IDENTIFIED BY '';"
 mysql -u root --skip-password -e "CREATE USER 'user_bob'@'localhost' IDENTIFIED BY '';"
 mysql -u root --skip-password -e "CREATE USER 'user_charlie'@'localhost' IDENTIFIED BY '';"
 mysql -u root --skip-password -e "CREATE USER 'user_charlie'@'198.19.249.3' IDENTIFIED BY '';"
 
-mysql -u root --skip-password -e "CREATE DATABASE IF NOT EXISTS abac_test";
-mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.employees ( id INT PRIMARY KEY, name VARCHAR(100), department VARCHAR(50) )";
-mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.projects ( id INT PRIMARY KEY, name VARCHAR(100), classification VARCHAR(50) )";
-mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.sensitive_data ( id INT PRIMARY KEY, info TEXT )";
-mysql -u root --skip-password -e "INSERT INTO abac_test.employees (id, name, department) VALUES (1, 'Alice', 'IT'), (2, 'Bob', 'HR'), (3, 'Charlie', 'Finance')";
-mysql -u root --skip-password -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (1, 'Project X', 'Top Secret'), (2, 'Project Y', 'Confidential'), (3, 'Project Z', 'Public')";
-mysql -u root --skip-password -e "INSERT INTO abac_test.sensitive_data (id, info) VALUES (1, 'Sensitive information 1'), (2, 'Sensitive information 2'), (3, 'Sensitive information 3')";
+mysql -u root --skip-password -e "CREATE DATABASE IF NOT EXISTS abac_test;"
+mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.employees ( id INT PRIMARY KEY, name VARCHAR(100), department VARCHAR(50) );"
+mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.projects ( id INT PRIMARY KEY, name VARCHAR(100), classification VARCHAR(50) );"
+mysql -u root --skip-password -e "CREATE TABLE IF NOT EXISTS abac_test.sensitive_data ( id INT PRIMARY KEY, info TEXT );"
+mysql -u root --skip-password -e "INSERT INTO abac_test.employees (id, name, department) VALUES (1, 'Alice', 'IT'), (2, 'Bob', 'HR'), (3, 'Charlie', 'Finance');"
+mysql -u root --skip-password -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (1, 'Project X', 'Top Secret'), (2, 'Project Y', 'Confidential'), (3, 'Project Z', 'Public');"
+mysql -u root --skip-password -e "INSERT INTO abac_test.sensitive_data (id, info) VALUES (1, 'Sensitive information 1'), (2, 'Sensitive information 2'), (3, 'Sensitive information 3');"
 
-mysql -u root --skip-password -e "CREATE USER ATTRIBUTE user_role";
-mysql -u root --skip-password -e "CREATE USER ATTRIBUTE clearance_level";
-mysql -u root --skip-password -e "CREATE RESOURCE ATTRIBUTE data_classification";
-mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:manager TO user_alice";
-mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:employee TO user_bob";
-mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:intern TO user_charlie";
-mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:top_secret TO user_alice";
-mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:confidential TO user_bob";
-mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:public TO user_charlie";
-mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:public TO abac_test.employees";
-mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:priv TO abac_test.projects";
-mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:sensitiv TO abac_test.sensitive_data";
+mysql -u root --skip-password -e "CREATE USER ATTRIBUTE user_role;"
+mysql -u root --skip-password -e "CREATE USER ATTRIBUTE clearance_level;"
+mysql -u root --skip-password -e "CREATE RESOURCE ATTRIBUTE data_classification;"
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:manager TO user_alice;"
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:employee TO user_bob;"
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE user_role:intern TO user_charlie;"
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:top_secret TO user_alice;"
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:confidential TO user_bob;"
+mysql -u root --skip-password -e "GRANT USER ATTRIBUTE clearance_level:public TO user_charlie;"
+mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:public TO abac_test.employees;"
+mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:priv TO abac_test.projects;"
+mysql -u root --skip-password -e "GRANT RESOURCE ATTRIBUTE data_classification:sensitiv TO abac_test.sensitive_data;"
 
-mysql -u root --skip-password -e  "CREATE RULE manager_access FOR SELECT OF USER ATTRIBUTE (user_role:manager) AND RESOURCE ATTRIBUTE (data_classification:sensitiv) AND ENVIRONMENT ATTRIBUTE (weekday, night, '127.0.0.0/8')";
-mysql -u root --skip-password -e  "CREATE RULE employee_access FOR SELECT, INSERT, UPDATE, DELETE OF USER ATTRIBUTE (user_role:employee) AND RESOURCE ATTRIBUTE (data_classification:priv) AND ENVIRONMENT ATTRIBUTE (weekday, night, '127.0.0.0/8')";
-mysql -u root --skip-password -e  "CREATE RULE intern_access FOR SELECT OF USER ATTRIBUTE (user_role:intern) AND RESOURCE ATTRIBUTE (data_classification:public) AND ENVIRONMENT ATTRIBUTE (weekday, night, '198.0.0.0/8')";
+mysql -u root --skip-password -e  "CREATE RULE manager_access FOR SELECT OF USER ATTRIBUTE (user_role:manager) AND RESOURCE ATTRIBUTE (data_classification:sensitiv) AND ENVIRONMENT ATTRIBUTE (weekday, day, '127.0.0.0/8');"
+mysql -u root --skip-password -e  "CREATE RULE employee_access FOR SELECT, INSERT, UPDATE, DELETE OF USER ATTRIBUTE (user_role:employee) AND RESOURCE ATTRIBUTE (data_classification:priv) AND ENVIRONMENT ATTRIBUTE (weekday, day, '127.0.0.0/8');"
+mysql -u root --skip-password -e  "CREATE RULE intern_access FOR SELECT OF USER ATTRIBUTE (user_role:intern) AND RESOURCE ATTRIBUTE (data_classification:public) AND ENVIRONMENT ATTRIBUTE (weekday, day, '198.0.0.0/8');"
 
-# mysql -u user_alice --skip-password -e "SELECT * FROM abac_test.sensitive_data;"
-# mysql -u user_bob --skip-password -e "SELECT * FROM abac_test.projects;"
-# mysql -u user_charlie --skip-password -e "SELECT * FROM abac_test.employees;"
+mysql -u user_alice --skip-password -e "SELECT * FROM abac_test.sensitive_data;"
+mysql -u user_bob --skip-password -e "SELECT * FROM abac_test.projects;"
+mysql -u user_charlie --skip-password -e "SELECT * FROM abac_test.employees;" || true
 
-# mysql -u user_bob --skip-password -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (4, 'Project A', 'Top Secret'); SELECT * FROM abac_test.projects;"
-# mysql -u user_bob --skip-password -e "UPDATE abac_test.projects SET classification = 'Top Secret' WHERE id = 1; SELECT * FROM abac_test.projects;"
-# mysql -u user_bob --skip-password -e "DELETE FROM abac_test.projects WHERE id = 1; SELECT * FROM abac_test.projects;"
+mysql -u user_bob --skip-password -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (4, 'Project A', 'Top Secret');"
+mysql -u user_bob --skip-password -e "UPDATE abac_test.projects SET classification = 'Top Secret' WHERE id = 1;"
+mysql -u user_bob --skip-password -e "DELETE FROM abac_test.projects WHERE id = 1;"
+
+mysql -u root --skip-password -e "SELECT EVENT_ID, FORMAT(TIMER_WAIT/1000000000,8) as Duration_in_ns, SQL_TEXT FROM performance_schema.events_statements_history_long WHERE SQL_TEXT not like '%NULL%' and SQL_TEXT not like '%version_comment%';" --raw --batch --sigint-ignore > $PROFILE_OUT
 }
 
 test_all_features

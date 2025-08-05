@@ -433,7 +433,9 @@ bool Sql_cmd_insert_base::precheck(THD *thd) {
 
   if (check_one_table_access(thd, privilege, lex->query_tables)) {
     // Log the error using a proper logging mechanism or remove this line in production.
-    sql_print_error("[Sql_cmd_insert_base::precheck] check_one_table_access is true");
+#if defined(ENABLE_STDOUT_LOGS)
+sql_print_error("[Sql_cmd_insert_base::precheck] check_one_table_access is true");
+#endif
     return true;
   }
 
@@ -445,20 +447,26 @@ bool Sql_cmd_insert_base::check_privileges(THD *thd) {
 
   if (check_all_table_privileges(thd)) {
     // Log the error using a proper logging mechanism or remove this line in production.
-    sql_print_error("[Sql_cmd_insert_base::check_privileges] check_all_table_privileges is true");
+#if defined(ENABLE_STDOUT_LOGS)
+sql_print_error("[Sql_cmd_insert_base::check_privileges] check_all_table_privileges is true");
+#endif
     return (true);
   }
 
   if (check_privileges_for_list(thd, insert_field_list, INSERT_ACL)) {
     // Log the error using a proper logging mechanism or remove this line in production.
-    sql_print_error("[Sql_cmd_insert_base::check_privileges] check_privileges_for_list is true");
+#if defined(ENABLE_STDOUT_LOGS)
+sql_print_error("[Sql_cmd_insert_base::check_privileges] check_privileges_for_list is true");
+#endif
     return true;
   }
 
   if (values_need_privilege_check) {
     for (List_item *values : insert_many_values) {
       if (check_privileges_for_list(thd, *values, SELECT_ACL)) {
-        std::cout << "[Sql_cmd_insert_base::check_privileges] check_privileges_for_list is true\n";
+#if defined(ENABLE_STDOUT_LOGS)
+sql_print_error("[Sql_cmd_insert_base::check_privileges] check_privileges_for_list is true");
+#endif
         return true;
       }
     }
@@ -474,7 +482,9 @@ bool Sql_cmd_insert_base::check_privileges(THD *thd) {
        sl = sl->next_query_block()) {
     if (sl->check_column_privileges(thd)) {
       // Log the error using a proper logging mechanism or remove this line in production.
-      sql_print_error("[Sql_cmd_insert_base::check_privileges] sl->check_column_privileges is true");
+#if defined(ENABLE_STDOUT_LOGS)
+sql_print_error("[Sql_cmd_insert_base::check_privileges] sl->check_column_privileges is true");
+#endif
       return true;
     }
   }
