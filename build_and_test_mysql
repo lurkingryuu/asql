@@ -875,58 +875,58 @@ print_success "MySQL Server is Running!"
 
 
 test_all_features() {
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_actors SET ENABLED = 'NO', HISTORY = 'NO' WHERE HOST = '%' AND USER = '%';"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','root','%','YES','YES');"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_alice','%','YES','YES');"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_bob','%','YES','YES');"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_charlie','%','YES','YES');"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "SELECT * FROM performance_schema.setup_actors;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%statement/%';"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%stage/%';"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME LIKE '%events_statements_%';"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME LIKE '%events_stages_%';"
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_actors SET ENABLED = 'NO', HISTORY = 'NO' WHERE HOST = '%' AND USER = '%';" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','root','%','YES','YES');" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_alice','%','YES','YES');" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_bob','%','YES','YES');" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO performance_schema.setup_actors (HOST,USER,ROLE,ENABLED,HISTORY) VALUES('localhost','user_charlie','%','YES','YES');" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "SELECT * FROM performance_schema.setup_actors;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%statement/%';" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%stage/%';" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME LIKE '%events_statements_%';" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME LIKE '%events_stages_%';" 2> /dev/null
 
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER 'user_alice'@'localhost' IDENTIFIED BY '';"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER 'user_bob'@'localhost' IDENTIFIED BY '';"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER 'user_charlie'@'localhost' IDENTIFIED BY '';"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER 'user_charlie'@'198.19.249.3' IDENTIFIED BY '';"
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER 'user_alice'@'localhost' IDENTIFIED BY '';" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER 'user_bob'@'localhost' IDENTIFIED BY '';" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER 'user_charlie'@'localhost' IDENTIFIED BY '';" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER 'user_charlie'@'198.19.249.3' IDENTIFIED BY '';" 2> /dev/null
 
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE DATABASE IF NOT EXISTS abac_test;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE TABLE IF NOT EXISTS abac_test.employees ( id INT PRIMARY KEY, name VARCHAR(100), department VARCHAR(50) );"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE TABLE IF NOT EXISTS abac_test.projects ( id INT PRIMARY KEY, name VARCHAR(100), classification VARCHAR(50) );"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE TABLE IF NOT EXISTS abac_test.sensitive_data ( id INT PRIMARY KEY, info TEXT );"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO abac_test.employees (id, name, department) VALUES (1, 'Alice', 'IT'), (2, 'Bob', 'HR'), (3, 'Charlie', 'Finance');"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (1, 'Project X', 'Top Secret'), (2, 'Project Y', 'Confidential'), (3, 'Project Z', 'Public');"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO abac_test.sensitive_data (id, info) VALUES (1, 'Sensitive information 1'), (2, 'Sensitive information 2'), (3, 'Sensitive information 3');"
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE DATABASE IF NOT EXISTS abac_test;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE TABLE IF NOT EXISTS abac_test.employees ( id INT PRIMARY KEY, name VARCHAR(100), department VARCHAR(50) );" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE TABLE IF NOT EXISTS abac_test.projects ( id INT PRIMARY KEY, name VARCHAR(100), classification VARCHAR(50) );" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE TABLE IF NOT EXISTS abac_test.sensitive_data ( id INT PRIMARY KEY, info TEXT );" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO abac_test.employees (id, name, department) VALUES (1, 'Alice', 'IT'), (2, 'Bob', 'HR'), (3, 'Charlie', 'Finance');" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (1, 'Project X', 'Top Secret'), (2, 'Project Y', 'Confidential'), (3, 'Project Z', 'Public');" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO abac_test.sensitive_data (id, info) VALUES (1, 'Sensitive information 1'), (2, 'Sensitive information 2'), (3, 'Sensitive information 3');" 2> /dev/null
 
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER ATTRIBUTE user_role;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER ATTRIBUTE clearance_level;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE RESOURCE ATTRIBUTE data_classification;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE user_role:manager TO user_alice;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE user_role:employee TO user_bob;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE user_role:intern TO user_charlie;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE clearance_level:top_secret TO user_alice;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE clearance_level:confidential TO user_bob;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE clearance_level:public TO user_charlie;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT RESOURCE ATTRIBUTE data_classification:public TO abac_test.employees;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT RESOURCE ATTRIBUTE data_classification:priv TO abac_test.projects;"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT RESOURCE ATTRIBUTE data_classification:sensitiv TO abac_test.sensitive_data;"
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER ATTRIBUTE user_role;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE USER ATTRIBUTE clearance_level;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "CREATE RESOURCE ATTRIBUTE data_classification;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE user_role:manager TO user_alice;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE user_role:employee TO user_bob;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE user_role:intern TO user_charlie;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE clearance_level:top_secret TO user_alice;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE clearance_level:confidential TO user_bob;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT USER ATTRIBUTE clearance_level:public TO user_charlie;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT RESOURCE ATTRIBUTE data_classification:public TO abac_test.employees;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT RESOURCE ATTRIBUTE data_classification:priv TO abac_test.projects;" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "GRANT RESOURCE ATTRIBUTE data_classification:sensitiv TO abac_test.sensitive_data;" 2> /dev/null
 
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e  "CREATE RULE manager_access FOR SELECT OF USER ATTRIBUTE (user_role:manager) AND RESOURCE ATTRIBUTE (data_classification:sensitiv) AND ENVIRONMENT ATTRIBUTE (weekday, day, '127.0.0.0/8');"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e  "CREATE RULE employee_access FOR SELECT, INSERT, UPDATE, DELETE OF USER ATTRIBUTE (user_role:employee) AND RESOURCE ATTRIBUTE (data_classification:priv) AND ENVIRONMENT ATTRIBUTE (weekday, day, '127.0.0.0/8');"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e  "CREATE RULE intern_access FOR SELECT OF USER ATTRIBUTE (user_role:intern) AND RESOURCE ATTRIBUTE (data_classification:public) AND ENVIRONMENT ATTRIBUTE (weekday, day, '198.0.0.0/8');"
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e  "CREATE RULE manager_access FOR SELECT OF USER ATTRIBUTE (user_role:manager) AND RESOURCE ATTRIBUTE (data_classification:sensitiv) AND ENVIRONMENT ATTRIBUTE (weekday, day, '127.0.0.0/8');" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e  "CREATE RULE employee_access FOR SELECT, INSERT, UPDATE, DELETE OF USER ATTRIBUTE (user_role:employee) AND RESOURCE ATTRIBUTE (data_classification:priv) AND ENVIRONMENT ATTRIBUTE (weekday, day, '127.0.0.0/8');" 2> /dev/null
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e  "CREATE RULE intern_access FOR SELECT OF USER ATTRIBUTE (user_role:intern) AND RESOURCE ATTRIBUTE (data_classification:public) AND ENVIRONMENT ATTRIBUTE (weekday, day, '198.0.0.0/8');" 2> /dev/null
 
-mysql -u user_alice --skip-password --socket="$MYSQL_SOCKET" -e "SELECT * FROM abac_test.sensitive_data;"
-mysql -u user_bob --skip-password --socket="$MYSQL_SOCKET" -e "SELECT * FROM abac_test.projects;"
-mysql -u user_charlie --skip-password --socket="$MYSQL_SOCKET" -e "SELECT * FROM abac_test.employees;" || true
+mysql -u user_alice --skip-password --socket="$MYSQL_SOCKET" -e "SELECT * FROM abac_test.sensitive_data;" 2> /dev/null
+mysql -u user_bob --skip-password --socket="$MYSQL_SOCKET" -e "SELECT * FROM abac_test.projects;" 2> /dev/null
+mysql -u user_charlie --skip-password --socket="$MYSQL_SOCKET" -e "SELECT * FROM abac_test.employees;" 2> /dev/null || true
 
-mysql -u user_bob --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (4, 'Project A', 'Top Secret');"
-mysql -u user_bob --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE abac_test.projects SET classification = 'Top Secret' WHERE id = 1;"
-mysql -u user_bob --skip-password --socket="$MYSQL_SOCKET" -e "DELETE FROM abac_test.projects WHERE id = 1;"
+mysql -u user_bob --skip-password --socket="$MYSQL_SOCKET" -e "INSERT INTO abac_test.projects (id, name, classification) VALUES (4, 'Project A', 'Top Secret');" 2> /dev/null
+mysql -u user_bob --skip-password --socket="$MYSQL_SOCKET" -e "UPDATE abac_test.projects SET classification = 'Top Secret' WHERE id = 1;" 2> /dev/null
+mysql -u user_bob --skip-password --socket="$MYSQL_SOCKET" -e "DELETE FROM abac_test.projects WHERE id = 1;" 2> /dev/null
 
 # Ensure profile output directory exists
 mkdir -p "$PROFILE_OUT_DIR"
-mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "SELECT EVENT_ID, FORMAT(TIMER_WAIT/1000000000,8) as Duration_in_ns, SQL_TEXT FROM performance_schema.events_statements_history_long WHERE SQL_TEXT not like '%NULL%' and SQL_TEXT not like '%version_comment%';" --raw --batch --sigint-ignore > "$PROFILE_OUT"
+mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "SELECT EVENT_ID, FORMAT(TIMER_WAIT/1000000000,8) as Duration_in_ns, SQL_TEXT FROM performance_schema.events_statements_history_long WHERE SQL_TEXT not like '%NULL%' and SQL_TEXT not like '%version_comment%';" --raw --batch --sigint-ignore > "$PROFILE_OUT" 2> /dev/null
 }
 
 
