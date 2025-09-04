@@ -1,0 +1,210 @@
+# Docker Compose for MySQL with Authorization Plugin Support
+# =============================================================================
+
+services:
+  # =============================================================================
+  # MySQL Server with Authorization Plugin
+  # =============================================================================
+  mysql:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mysql-auth-plugin
+    restart: unless-stopped
+
+    # Environment variables for authorization plugin configuration
+    environment:
+      # Simple Authorization Plugin Configuration
+      SIMPLE_AUTH_MODE: ${SIMPLE_AUTH_MODE:-ignore}          # grant|deny|ignore
+      SIMPLE_AUTH_ALLOW_USER: ${SIMPLE_AUTH_ALLOW_USER:-}     # User to grant access to
+      SIMPLE_AUTH_ALLOW_DB: ${SIMPLE_AUTH_ALLOW_DB:-}         # Database to grant access to
+
+      # External Authorization Plugin Configuration
+      EXTERNAL_AUTH_URL: ${EXTERNAL_AUTH_URL:-}               # URL of external auth service
+      EXTERNAL_AUTH_TIMEOUT: ${EXTERNAL_AUTH_TIMEOUT:-5000}   # Timeout in milliseconds
+
+      # MySQL Configuration
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-testdb}
+      MYSQL_USER: ${MYSQL_USER:-}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+
+    # Ports
+    ports:
+      - "3306:3306"
+
+    # Volumes for data persistence
+    volumes:
+      - mysql_data:/var/lib/mysql-data
+      - mysql_logs:/var/log/mysql
+      - ./docker/mysql/my.cnf:/etc/mysql/my.cnf:ro
+
+    # Networks
+    networks:
+      - mysql-auth-network
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Dependencies
+    depends_on:
+      auth-service:
+        condition: service_healthy
+
+    # Command to initialize and start MySQL
+    command: >
+      sh -c "
+        if [ ! -d '/var/lib/mysql-data/mysql' ]; then
+          echo 'Initializing MySQL database...'
+          docker-entrypoint.sh init
+        fi &&
+        echo 'Starting MySQL server...' &&
+        docker-entrypoint.sh mysqld
+      "
+
+  # =============================================================================
+  # External Authorization Service
+  # =============================================================================
+  auth-service:
+    build:
+      context: .
+      dockerfile: docker/auth-service/Dockerfile
+    container_name: mysql-auth-service
+    restart: unless-stopped
+
+    # Environment variables
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+
+    # Ports
+    ports:
+      - "8080:8080"
+
+    # Networks
+    networks:
+      - mysql-auth-network
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Command
+    command: ["npm", "start"]
+
+  # =============================================================================
+  # MySQL Client (for testing and administration)
+  # =============================================================================
+  mysql-client:
+    image: mysql:8.0
+    container_name: mysql-client
+    profiles: ["client"]
+    restart: "no"
+
+    # Environment
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+
+    # Networks
+    networks:
+      - mysql-auth-network
+
+    # Dependencies
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+    # Interactive terminal
+    stdin_open: true
+    tty: true
+
+    # Default command (can be overridden)
+    command: >
+      sh -c "
+        echo 'MySQL Client Container'
+        echo '====================='
+        echo 'Connect to MySQL: mysql -h mysql -u root -p'
+        echo 'Test users:'
+        echo '  - testuser/password (no privileges - for plugin testing)'
+        echo '  - normaluser/password (has SELECT on testdb)'
+        echo ''
+        exec /bin/bash
+      "
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  mysql_data:
+    driver: local
+    name: mysql_auth_plugin_data
+
+  mysql_logs:
+    driver: local
+    name: mysql_auth_plugin_logs
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  mysql-auth-network:
+    driver: bridge
+    name: mysql_auth_network
+
+# =============================================================================
+# Configuration Examples
+# =============================================================================
+
+# Example 1: Simple Authorization Mode
+# ====================================
+# SIMPLE_AUTH_MODE=grant
+# SIMPLE_AUTH_ALLOW_USER=testuser
+# SIMPLE_AUTH_ALLOW_DB=testdb
+#
+# This will allow testuser to access testdb even without built-in MySQL privileges
+
+# Example 2: External Authorization Mode
+# ======================================
+# SIMPLE_AUTH_MODE=ignore
+# EXTERNAL_AUTH_URL=http://auth-service:8080/auth
+# EXTERNAL_AUTH_TIMEOUT=3000
+#
+# This will delegate authorization decisions to the external service
+
+# Example 3: Combined Mode
+# ========================
+# SIMPLE_AUTH_MODE=grant
+# SIMPLE_AUTH_ALLOW_USER=admin
+# EXTERNAL_AUTH_URL=http://auth-service:8080/auth
+#
+# This will use both simple and external authorization (external takes precedence)
+
+# Usage Examples:
+# ===============
+#
+# 1. Start with simple authorization:
+#    SIMPLE_AUTH_MODE=grant SIMPLE_AUTH_ALLOW_USER=testuser SIMPLE_AUTH_ALLOW_DB=testdb docker-compose up mysql
+#
+# 2. Start with external authorization:
+#    EXTERNAL_AUTH_URL=http://auth-service:8080/auth docker-compose up
+#
+# 3. Start MySQL client for testing:
+#    docker-compose --profile client run --rm mysql-client
+#
+# 4. Run test suite:
+#    docker-compose exec mysql sh -c "mysql -u root -p < /plugin/authorization/test_authorization_plugin.sql"
+#
+# 5. Check authorization service logs:
+#    docker-compose logs auth-service
+#
+# 6. Monitor MySQL authorization decisions:
+#    docker-compose exec mysql tail -f /var/log/mysql/general.log

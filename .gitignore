@@ -31,3 +31,7 @@ scalability_jobs_*
 .cproject
 .project
 .settings/
+
+extra/protobuf/protobuf-24.4/java/core/bin
+.cache/
+.env

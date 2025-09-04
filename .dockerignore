@@ -1,0 +1,50 @@
+# Git repository files
+.git/
+.gitignore
+
+# Build artifacts and directories
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+
+# IDE and editor files
+.vscode/
+.cproject
+.project
+.settings/
+*.swp
+*.swo
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+
+# Documentation (not needed for build)
+README*
+*.md
+Docs/
+docker/
+DOCKER-QUICKSTART.md
+
+# Temporary files
+*~
+__pycache__/
+*.tmp
+*.log
+
+# Source downloads and external dependencies
+source_downloads/
+
+# Test files (optional - remove if you want to include tests)
+mysql-test/
+
+# Packaging files
+packaging/
+
+# Emacs backup files
+*~
+
+# Secrets
+.env

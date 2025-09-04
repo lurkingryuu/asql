@@ -55,6 +55,7 @@
 #include "mysql/components/services/system_variable_source_type.h"
 #include "mysql/plugin_audit.h"
 #include "mysql/plugin_auth.h"
+#include "mysql/plugin_authorization.h"
 #include "mysql/plugin_clone.h"
 #include "mysql/plugin_group_replication.h"
 #include "mysql/plugin_keyring.h"
@@ -355,10 +356,13 @@ const LEX_CSTRING plugin_type_names[MYSQL_MAX_PLUGIN_TYPE_NUM] = {
     {STRING_WITH_LEN("VALIDATE PASSWORD")},
     {STRING_WITH_LEN("GROUP REPLICATION")},
     {STRING_WITH_LEN("KEYRING")},
-    {STRING_WITH_LEN("CLONE")}};
+    {STRING_WITH_LEN("CLONE")},
+    {STRING_WITH_LEN("AUTHORIZATION")}};
 
 extern int initialize_schema_table(st_plugin_int *plugin);
 extern int finalize_schema_table(st_plugin_int *plugin);
+extern int initialize_authorization_plugin(st_plugin_int *plugin);
+extern int finalize_authorization_plugin(st_plugin_int *plugin);
 
 /*
   The number of elements in both plugin_type_initialize and
@@ -374,7 +378,11 @@ plugin_type_init plugin_type_initialize[MYSQL_MAX_PLUGIN_TYPE_NUM] = {
     initialize_audit_plugin,
     nullptr,
     nullptr,
-    nullptr};
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    initialize_authorization_plugin};
 
 plugin_type_init plugin_type_deinitialize[MYSQL_MAX_PLUGIN_TYPE_NUM] = {
     nullptr,
@@ -385,7 +393,11 @@ plugin_type_init plugin_type_deinitialize[MYSQL_MAX_PLUGIN_TYPE_NUM] = {
     finalize_audit_plugin,
     nullptr,
     nullptr,
-    nullptr};
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    finalize_authorization_plugin};
 
 static const char *plugin_interface_version_sym =
     "_mysql_plugin_interface_version_";
@@ -411,7 +423,8 @@ static int min_plugin_info_interface_version[MYSQL_MAX_PLUGIN_TYPE_NUM] = {
     MYSQL_VALIDATE_PASSWORD_INTERFACE_VERSION,
     MYSQL_GROUP_REPLICATION_INTERFACE_VERSION,
     MYSQL_KEYRING_INTERFACE_VERSION,
-    MYSQL_CLONE_INTERFACE_VERSION};
+    MYSQL_CLONE_INTERFACE_VERSION,
+    MYSQL_AUTHORIZATION_INTERFACE_VERSION};
 static int cur_plugin_info_interface_version[MYSQL_MAX_PLUGIN_TYPE_NUM] = {
     0x0000, /* UDF: not implemented */
     MYSQL_HANDLERTON_INTERFACE_VERSION,
@@ -424,7 +437,8 @@ static int cur_plugin_info_interface_version[MYSQL_MAX_PLUGIN_TYPE_NUM] = {
     MYSQL_VALIDATE_PASSWORD_INTERFACE_VERSION,
     MYSQL_GROUP_REPLICATION_INTERFACE_VERSION,
     MYSQL_KEYRING_INTERFACE_VERSION,
-    MYSQL_CLONE_INTERFACE_VERSION};
+    MYSQL_CLONE_INTERFACE_VERSION,
+    MYSQL_AUTHORIZATION_INTERFACE_VERSION};
 
 /* support for Services */
 
