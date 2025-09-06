@@ -21,13 +21,6 @@ CMakeFiles/
 [._]ss[a-gi-z]
 [._]sw[a-p]
 
-# Documentation (not needed for build)
-README*
-*.md
-Docs/
-docker/
-DOCKER-QUICKSTART.md
-
 # Temporary files
 *~
 __pycache__/
@@ -37,14 +30,18 @@ __pycache__/
 # Source downloads and external dependencies
 source_downloads/
 
-# Test files (optional - remove if you want to include tests)
-mysql-test/
-
-# Packaging files
-packaging/
+# Test and packaging directories are required by CMake
+# (Do not exclude them from the build context)
+# mysql-test/
+# packaging/
 
 # Emacs backup files
 *~
 
 # Secrets
 .env
+
+# Docker files (keep docker/ in context)
+# docker/
+Dockerfile
+docker-compose.yml

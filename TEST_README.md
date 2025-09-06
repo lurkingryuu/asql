@@ -205,8 +205,8 @@ You can also run individual SQL commands manually:
 INSTALL PLUGIN simple_authorization SONAME 'simple_authorization.so';
 
 -- Configure plugin
-SET GLOBAL simple_auth_mode = 'grant';
-SET GLOBAL simple_auth_allow_user = 'testuser';
+SET GLOBAL simple_authorization_mode = 'grant';
+SET GLOBAL simple_authorization_allow_user = 'testuser';
 
 -- Create test user
 CREATE USER 'testuser'@'localhost' IDENTIFIED BY 'password';

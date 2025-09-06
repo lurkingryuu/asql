@@ -79,6 +79,8 @@ static int external_authorization_timeout = 5000; // milliseconds
 
 // Plugin initialization flag
 static bool plugin_initialized = false;
+// Saved plugin handle for logging
+static MYSQL_PLUGIN plugin_handle = nullptr;
 
 // Helper structure for HTTP response
 struct HttpResponse {
@@ -179,16 +181,18 @@ static mysql_authorization_result_t call_external_service(
   curl_easy_cleanup(curl);
   
   if (res != CURLE_OK) {
-    my_plugin_log_message(&external_authorization, MY_WARNING_LEVEL,
-                           "External authorization request failed: %s",
-                           curl_easy_strerror(res));
+    if (plugin_handle)
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "External authorization request failed: %s",
+                            curl_easy_strerror(res));
     return MYSQL_AUTHORIZATION_IGNORE;
   }
   
   if (response_code != 200) {
-    my_plugin_log_message(&external_authorization, MY_WARNING_LEVEL,
-                           "External authorization server returned HTTP %ld",
-                           response_code);
+    if (plugin_handle)
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "External authorization server returned HTTP %ld",
+                            response_code);
     return MYSQL_AUTHORIZATION_IGNORE;
   }
   
@@ -199,21 +203,25 @@ static mysql_authorization_result_t call_external_service(
   std::istringstream response_stream(response.data);
   
   if (!Json::parseFromStream(reader_builder, response_stream, &json_response, &parse_errors)) {
-    my_plugin_log_message(&external_authorization, MY_WARNING_LEVEL,
-                           "Failed to parse external authorization response: %s",
-                           parse_errors.c_str());
+    if (plugin_handle)
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "Failed to parse external authorization response: %s",
+                            parse_errors.c_str());
     return MYSQL_AUTHORIZATION_IGNORE;
   }
   
   if (!json_response.isMember("result")) {
-    my_plugin_log_message(&external_authorization, MY_WARNING_LEVEL,
-                           "External authorization response missing 'result' field");
+    if (plugin_handle)
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "External authorization response missing 'result' field");
     return MYSQL_AUTHORIZATION_IGNORE;
   }
   
   std::string result = json_response["result"].asString();
-  my_plugin_log_message(&external_authorization, MY_INFORMATION_LEVEL,
-                         "External authorization result: %s", result.c_str());
+  if (plugin_handle)
+    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                          "External authorization result: %s",
+                          result.c_str());
   
   if (result == "grant") {
     return MYSQL_AUTHORIZATION_GRANT;
@@ -242,13 +250,15 @@ static st_mysql_authorization external_authorization_descriptor = {
 };
 
 // Plugin initialization
-static int external_authorization_init(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
+static int external_authorization_init(MYSQL_PLUGIN plugin_info) {
   // Initialize libcurl globally
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) {
     // Log error through other means if needed
     return 1;
   }
 
+  // Save plugin handle for logging
+  plugin_handle = plugin_info;
   plugin_initialized = true;
   // Log message will be handled through other means if needed
   return 0;
@@ -258,6 +268,7 @@ static int external_authorization_init(MYSQL_PLUGIN plugin_info [[maybe_unused]]
 static int external_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
   plugin_initialized = false;
   curl_global_cleanup();
+  plugin_handle = nullptr;
   // Log message will be handled through other means if needed
   return 0;
 }

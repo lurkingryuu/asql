@@ -371,8 +371,8 @@ cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
    # Add to my.cnf
    [mysqld]
    plugin-load-add=simple_authorization.so
-   simple_auth_mode=grant
-   simple_auth_allow_user=authorized_user
+   simple_authorization_mode=grant
+   simple_authorization_allow_user=authorized_user
    ```
 
 ### Docker Deployment

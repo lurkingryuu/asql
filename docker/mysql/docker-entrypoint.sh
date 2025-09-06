@@ -4,52 +4,49 @@ set -e
 # MySQL Docker Entrypoint Script for Authorization Plugin Support
 # =============================================================================
 
-# Create necessary directories
-mkdir -p /var/run/mysqld
-mkdir -p /var/lib/mysql-data
-mkdir -p /var/log/mysql
+# Set proper permissions when running as root
+if [ "$(id -u)" = "0" ]; then
+  chown -R mysql:mysql /var/run/mysqld || true
+  chown -R mysql:mysql /var/lib/mysql-data || true
+  chown -R mysql:mysql /var/log/mysql || true
+fi
 
-# Set proper permissions
-chown -R mysql:mysql /var/run/mysqld
-chown -R mysql:mysql /var/lib/mysql-data
-chown -R mysql:mysql /var/log/mysql
+# Initialize MySQL data directory if it doesn't exist or is incomplete
+DATADIR="/var/lib/mysql-data"
 
-# Initialize MySQL data directory if it doesn't exist
-if [ ! -d "/var/lib/mysql-data/mysql" ]; then
-    echo "Initializing MySQL data directory..."
-    mysqld --initialize-insecure --user=mysql --datadir=/var/lib/mysql-data
+needs_init=false
+if [ ! -d "$DATADIR/mysql" ]; then
+  needs_init=true
+elif [ ! -f "$DATADIR/mysql.ibd" ]; then
+  # Likely incomplete/corrupt init or leftover empty volume
+  needs_init=true
+fi
+
+if [ "$needs_init" = true ]; then
+  echo "Initializing MySQL data directory..."
+  # If directory is non-empty but missing the mysql schema dir, either reinit (if allowed) or abort with instructions
+  if [ -d "$DATADIR" ] && [ "$(ls -A "$DATADIR" 2>/dev/null)" ]; then
+    if [ "${AUTO_REINIT:-0}" = "1" ]; then
+      echo "AUTO_REINIT=1 detected; purging $DATADIR for clean initialization"
+      # Remove contents but keep the directory (tolerate read-only/system entries)
+      if [ "$(id -u)" = "0" ]; then
+        find "$DATADIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+      else
+        # Fallback for non-root
+        rm -rf "$DATADIR"/* "$DATADIR"/.[!.]* "$DATADIR"/..?* 2>/dev/null || true
+      fi
+    else
+      echo "Data directory $DATADIR exists but is missing the 'mysql' directory." >&2
+      echo "To reset: docker compose down -v && docker compose up --build" >&2
+      echo "Alternatively, set AUTO_REINIT=1 to auto-purge the data dir on next start." >&2
+      exit 1
+    fi
+  fi
+  mysqld --initialize-insecure --user=mysql --datadir="$DATADIR"
 fi
 
 # Set environment variables for plugins
 export MYSQL_PLUGIN_DIR="/usr/local/mysql/lib/plugin"
-
-# Configure authorization plugins if environment variables are set
-if [ -n "$SIMPLE_AUTH_MODE" ]; then
-    echo "Setting simple authorization mode to: $SIMPLE_AUTH_MODE"
-    sed -i "s/simple_auth_mode.*/simple_auth_mode = $SIMPLE_AUTH_MODE/" /etc/mysql/my.cnf
-fi
-
-if [ -n "$SIMPLE_AUTH_ALLOW_USER" ]; then
-    echo "Setting simple authorization allow user to: $SIMPLE_AUTH_ALLOW_USER"
-    sed -i "s/simple_auth_allow_user.*/simple_auth_allow_user = $SIMPLE_AUTH_ALLOW_USER/" /etc/mysql/my.cnf
-fi
-
-if [ -n "$SIMPLE_AUTH_ALLOW_DB" ]; then
-    echo "Setting simple authorization allow database to: $SIMPLE_AUTH_ALLOW_DB"
-    sed -i "s/simple_auth_allow_db.*/simple_auth_allow_db = $SIMPLE_AUTH_ALLOW_DB/" /etc/mysql/my.cnf
-fi
-
-if [ -n "$EXTERNAL_AUTH_URL" ]; then
-    echo "Setting external authorization URL to: $EXTERNAL_AUTH_URL"
-    # Enable external authorization plugin
-    sed -i "s/plugin_load_add.*/plugin_load_add = simple_authorization.so,external_authorization.so/" /etc/mysql/my.cnf
-    sed -i "/\[mysqld\]/a external_authorization_url = $EXTERNAL_AUTH_URL" /etc/mysql/my.cnf
-fi
-
-if [ -n "$EXTERNAL_AUTH_TIMEOUT" ]; then
-    echo "Setting external authorization timeout to: $EXTERNAL_AUTH_TIMEOUT"
-    sed -i "/\[mysqld\]/a external_authorization_timeout = $EXTERNAL_AUTH_TIMEOUT" /etc/mysql/my.cnf
-fi
 
 # Handle different command modes
 if [ "$1" = 'mysqld' ]; then
@@ -59,8 +56,14 @@ if [ "$1" = 'mysqld' ]; then
     # Set ownership for data directory
     chown -R mysql:mysql /var/lib/mysql-data
 
+    # Stream error log to container stdout for easier debugging
+    touch /var/log/mysql/error.log || true
+    # Follow the error log in background and send to stdout
+    tail -n0 -F /var/log/mysql/error.log &
+
     # Execute MySQL server
-    exec mysqld --user=mysql --datadir=/var/lib/mysql-data --socket=/var/run/mysqld/mysqld.sock "$@"
+    shift
+    exec mysqld --user=mysql --datadir=/var/lib/mysql-data --socket=/var/run/mysqld/mysqld.sock --console "$@"
 elif [ "$1" = 'mysql' ]; then
     # Start MySQL client
     shift
@@ -132,7 +135,7 @@ elif [ "$1" = 'init' ]; then
         SET GLOBAL general_log_file = '/var/log/mysql/general.log';
 
         -- Show plugin status
-        SHOW PLUGINS LIKE '%authorization%';
+        SELECT PLUGIN_STATUS FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME LIKE '%authorization%';
     "
 
     # Stop MySQL

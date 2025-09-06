@@ -10,24 +10,11 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: mysql-auth-plugin
-    restart: unless-stopped
+    restart: "unless-stopped"
 
     # Environment variables for authorization plugin configuration
-    environment:
-      # Simple Authorization Plugin Configuration
-      SIMPLE_AUTH_MODE: ${SIMPLE_AUTH_MODE:-ignore}          # grant|deny|ignore
-      SIMPLE_AUTH_ALLOW_USER: ${SIMPLE_AUTH_ALLOW_USER:-}     # User to grant access to
-      SIMPLE_AUTH_ALLOW_DB: ${SIMPLE_AUTH_ALLOW_DB:-}         # Database to grant access to
-
-      # External Authorization Plugin Configuration
-      EXTERNAL_AUTH_URL: ${EXTERNAL_AUTH_URL:-}               # URL of external auth service
-      EXTERNAL_AUTH_TIMEOUT: ${EXTERNAL_AUTH_TIMEOUT:-5000}   # Timeout in milliseconds
-
-      # MySQL Configuration
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-testdb}
-      MYSQL_USER: ${MYSQL_USER:-}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+    env_file:
+      - .env
 
     # Ports
     ports:
@@ -37,7 +24,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql-data
       - mysql_logs:/var/log/mysql
-      - ./docker/mysql/my.cnf:/etc/mysql/my.cnf:ro
+      # Use my.cnf baked into the image; entrypoint edits it based on env
 
     # Networks
     networks:
@@ -59,12 +46,10 @@ services:
     # Command to initialize and start MySQL
     command: >
       sh -c "
-        if [ ! -d '/var/lib/mysql-data/mysql' ]; then
-          echo 'Initializing MySQL database...'
-          docker-entrypoint.sh init
-        fi &&
-        echo 'Starting MySQL server...' &&
-        docker-entrypoint.sh mysqld
+        echo 'Initializing MySQL database from compose file...';
+        docker-entrypoint.sh init;
+        echo 'Starting MySQL server from compose file...';
+        docker-entrypoint.sh mysqld;
       "
 
   # =============================================================================
@@ -92,7 +77,7 @@ services:
 
     # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -110,9 +95,8 @@ services:
     profiles: ["client"]
     restart: "no"
 
-    # Environment
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    env_file:
+      - .env
 
     # Networks
     networks:

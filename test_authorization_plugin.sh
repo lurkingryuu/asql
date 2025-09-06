@@ -61,32 +61,80 @@ print_result() {
     fi
 }
 
-# Function to execute MySQL command and return result
+# Function to execute MySQL command as root/admin user
 mysql_exec() {
     local query="$1"
     local expect_error="${2:-false}"
+    local mysql_cmd
 
-    print_debug "Executing: $query"
+    if [ "$DOCKER" = true ]; then
+        mysql_cmd="docker compose exec mysql mysql"
+    else
+        mysql_cmd="mysql"
+    fi
+
+    print_debug "Executing as admin: $query"
 
     if [ "$expect_error" = true ]; then
         # Expect error - redirect stderr to stdout and check exit code
         local output
-        output=$(mysql $MYSQL_CONN_ARGS -e "$query" 2>&1) || return 0
+        output=$( $mysql_cmd $MYSQL_CONN_ARGS -e "$query" 2>&1) || return 0
         echo "$output"
         return 0
     else
         # Normal execution
-        mysql $MYSQL_CONN_ARGS -e "$query"
+        $mysql_cmd $MYSQL_CONN_ARGS -e "$query"
+    fi
+}
+
+# Function to execute MySQL command as specific user
+mysql_exec_as_user() {
+    local username="$1"
+    local password="$2"
+    local query="$3"
+    local expect_error="${4:-false}"
+    local mysql_cmd
+
+    if [ "$DOCKER" = true ]; then
+        mysql_cmd="docker compose exec mysql mysql"
+    else
+        mysql_cmd="mysql"
+    fi
+
+    # Build connection arguments for specific user
+    local -a user_conn_args=( -u "$username" -p"$password" )
+    
+    # Add transport arguments (socket/port/host)
+    if [ -n "$MYSQL_TRANSPORT_ARGS" ]; then
+        # shellcheck disable=SC2206  # intentional word splitting
+        user_conn_args+=( $MYSQL_TRANSPORT_ARGS )
+    fi
+
+    print_debug "Executing as user $username: $query"
+
+    if [ "$expect_error" = true ]; then
+        # Expect error - redirect stderr to stdout and check exit code
+        local output
+        local exit_code
+        output=$( $mysql_cmd "${user_conn_args[@]}" -e "$query" 2>&1 || true)
+        exit_code=$?
+        echo "$output"
+        return 0
+    else
+        # Normal execution
+        $mysql_cmd "${user_conn_args[@]}" -e "$query"
     fi
 }
 
 # Function to test if query succeeds (no error)
 test_query_success() {
-    local description="$1"
-    local query="$2"
+    local username="$1"
+    local password="$2"
+    local description="$3"
+    local query="$4"
 
     print_test "$description"
-    if mysql_exec "$query" 2>/dev/null; then
+    if mysql_exec_as_user "$username" "$password" "$query" 2>/dev/null; then
         print_result "PASS" "$description"
         return 0
     else
@@ -95,17 +143,22 @@ test_query_success() {
     fi
 }
 
-# Function to test if query fails (error expected)
+# Function to test if query fails (error expected) - executed as admin
 test_query_failure() {
-    local description="$1"
-    local query="$2"
+    local username="$1"
+    local password="$2"
+    local description="$3"
+    local query="$4"
 
     print_test "$description"
-    if mysql_exec "$query" true 2>/dev/null | grep -q "ERROR\|Access denied"; then
+    local error_output
+    error_output=$(mysql_exec_as_user "$username" "$password" "$query" true 2>&1)
+    if echo "$error_output" | grep -q "ERROR\|Access denied"; then
         print_result "PASS" "$description"
         return 0
     else
         print_result "FAIL" "$description"
+        print_debug "No error found in output: $error_output"
         return 1
     fi
 }
@@ -118,30 +171,26 @@ test_user_access() {
     local expected_result="$4"  # "success" or "failure"
     local db_grant="$5"
 
+    local host="localhost"
+    if [ "$DOCKER" = true ]; then
+        host="%"
+    fi
+
     print_test "$description"
 
-    # Create temporary user
-    mysql_exec "DROP USER IF EXISTS '$username'@'localhost';"
-    mysql_exec "CREATE USER '$username'@'localhost' IDENTIFIED BY '$password';"
+    # Create temporary user (as admin)
+    mysql_exec "DROP USER IF EXISTS '$username'@'$host';"
+    mysql_exec "CREATE USER '$username'@'$host' IDENTIFIED BY '$password';"
 
     if [ "$db_grant" = true ]; then
-        mysql_exec "GRANT SELECT ON testdb.* TO '$username'@'localhost';"
+        mysql_exec "GRANT SELECT ON testdb.* TO '$username'@'$host';"
     fi
 
-    # Test access
-    local -a conn_args=( -u "$username" -p"$password" )
-    # Append socket/port options for secondary connection
-    if [ -n "$MYSQL_TRANSPORT_ARGS" ]; then
-        # shellcheck disable=SC2206  # intentional word splitting
-        conn_args+=( $MYSQL_TRANSPORT_ARGS )
-    fi
-
-    # TODO: Temporary replacement for db grant
-    # Give enough privileges to access the test database
+    # Test access as the specific user
     local test_query="USE testdb; SELECT COUNT(*) FROM test_table;"
 
     if [ "$expected_result" = "success" ]; then
-        if command mysql "${conn_args[@]}" -e "$test_query" 2>/dev/null; then
+        if mysql_exec_as_user "$username" "$password" "$test_query" 2>/dev/null; then
             print_result "PASS" "$description"
             return 0
         else
@@ -149,11 +198,15 @@ test_user_access() {
             return 1
         fi
     else
-        if command mysql "${conn_args[@]}" -e "$test_query" 2>&1 | grep -q "ERROR\|Access denied"; then
+        print_debug "Expected error: $test_query"
+        local error_output
+        error_output=$(mysql_exec_as_user "$username" "$password" "$test_query" true 2>&1)
+        if echo "$error_output" | grep -q "ERROR\|Access denied"; then
             print_result "PASS" "$description"
             return 0
         else
             print_result "FAIL" "$description"
+            print_debug "No error found in output: $error_output"
             return 1
         fi
     fi
@@ -193,10 +246,12 @@ install_plugin() {
     print_info "Installing plugin: $plugin_name ($full_plugin_path)"
 
     # Check if plugin file exists at the full path
-    if [ ! -f "$full_plugin_path" ]; then
-        print_warning "Plugin file $full_plugin_path not found, skipping $plugin_name tests"
-        print_info "Plugin directory: $plugin_dir"
-        return 1
+    if [ "$DOCKER" = false ]; then
+        if [ ! -f "$full_plugin_path" ]; then
+            print_warning "Plugin file $full_plugin_path not found, skipping $plugin_name tests"
+            print_info "Plugin directory: $plugin_dir"
+            return 1
+        fi
     fi
 
     # Try to install plugin (MySQL looks in plugin_dir)
@@ -242,6 +297,11 @@ test_simple_authorization_plugin() {
     local test_count=0
     local pass_count=0
 
+    local host="localhost"
+    if [ "$DOCKER" = true ]; then
+        host="%"
+    fi
+
     # Test 1: Plugin in IGNORE mode (should use built-in authorization)
     print_info "Test 1: Plugin in IGNORE mode"
     mysql_exec "SET GLOBAL simple_authorization_mode = 'ignore';"
@@ -259,11 +319,6 @@ test_simple_authorization_plugin() {
     mysql_exec "SET GLOBAL simple_authorization_allow_user = 'testuser_grant';"
     mysql_exec "SET GLOBAL simple_authorization_allow_db = DEFAULT;"
 
-    # Create user and test access
-    mysql_exec "DROP USER IF EXISTS 'testuser_grant'@'localhost';"
-    mysql_exec "CREATE USER 'testuser_grant'@'localhost' IDENTIFIED BY 'password';"
-    mysql_exec "GRANT SELECT ON testdb.* TO 'testuser_grant'@'localhost';"
-
     ((test_count++))
     if test_user_access "testuser_grant" "password" "User should have access via plugin" "success" true; then
         ((pass_count++))
@@ -276,12 +331,12 @@ test_simple_authorization_plugin() {
     mysql_exec "SET GLOBAL simple_authorization_allow_db = 'testdb';"
 
     # Create user and test access to allowed database
-    mysql_exec "DROP USER IF EXISTS 'testuser_db'@'localhost';"
-    mysql_exec "CREATE USER 'testuser_db'@'localhost' IDENTIFIED BY 'password';"
-    mysql_exec "GRANT SELECT ON testdb.* TO 'testuser_db'@'localhost';"
+    mysql_exec "DROP USER IF EXISTS 'testuser_db'@'$host';"
+    mysql_exec "CREATE USER 'testuser_db'@'$host' IDENTIFIED BY 'password';"
+    mysql_exec "GRANT SELECT ON testdb.* TO 'testuser_db'@'$host';"
 
     ((test_count++))
-    if test_query_success "testuser_db should access testdb" "USE testdb; SELECT COUNT(*) FROM test_table;"; then
+    if test_query_success "testuser_db" "password" "testuser_db should access testdb" "USE testdb; SELECT COUNT(*) FROM test_table;"; then
         ((pass_count++))
     fi
 
@@ -302,18 +357,12 @@ test_simple_authorization_plugin() {
     mysql_exec "SET GLOBAL simple_authorization_allow_user = 'testuser_ops';"
     mysql_exec "SET GLOBAL simple_authorization_allow_db = 'testdb';"
 
-    mysql_exec "DROP USER IF EXISTS 'testuser_ops'@'localhost';"
-    mysql_exec "CREATE USER 'testuser_ops'@'localhost' IDENTIFIED BY 'password';"
-
-    local -a conn_args=( -u testuser_ops -ppassword )
-    if [ -n "$MYSQL_TRANSPORT_ARGS" ]; then
-        # shellcheck disable=SC2206
-        conn_args+=( $MYSQL_TRANSPORT_ARGS )
-    fi
+    mysql_exec "DROP USER IF EXISTS 'testuser_ops'@'$host';"
+    mysql_exec "CREATE USER 'testuser_ops'@'$host' IDENTIFIED BY 'password';"
 
     # Test SELECT
     ((test_count++))
-    if command mysql "${conn_args[@]}" -e "USE testdb; SELECT * FROM test_table;" 2>/dev/null; then
+    if mysql_exec_as_user "testuser_ops" "password" "USE testdb; SELECT * FROM test_table;" 2>/dev/null; then
         print_result "PASS" "SELECT operation allowed"
         ((pass_count++))
     else
@@ -322,11 +371,14 @@ test_simple_authorization_plugin() {
 
     # Test INSERT (should fail - no INSERT privilege)
     ((test_count++))
-    if command mysql "${conn_args[@]}" -e "USE testdb; INSERT INTO test_table VALUES (3, 'test', 'data');" 2>&1 | grep -q "ERROR\|Access denied"; then
+    local insert_output
+    insert_output=$(mysql_exec_as_user "testuser_ops" "password" "USE testdb; INSERT INTO test_table VALUES (3, 'test', 'data');" true 2>&1)
+    if echo "$insert_output" | grep -q "ERROR\|Access denied"; then
         print_result "PASS" "INSERT operation correctly denied"
         ((pass_count++))
     else
         print_result "FAIL" "INSERT operation incorrectly allowed"
+        print_debug "Unexpected INSERT output: $insert_output"
     fi
 
     # Clean up
@@ -493,6 +545,8 @@ EXTERNAL_ONLY=false
 CLEANUP_ONLY=false
 VERBOSE=false
 DEBUG=false
+DOCKER=false
+
 
 MYSQL_SOCKET=""
 MYSQL_PORT=""
@@ -525,6 +579,10 @@ while [[ $# -gt 0 ]]; do
             MYSQL_PASSWORD="$2"
             shift 2
             ;;
+        --docker)
+            DOCKER=true
+            shift
+            ;;
         --cleanup-only)
             CLEANUP_ONLY=true
             shift
@@ -548,6 +606,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --mysql-port PORT      MySQL port (for TCP connections)"
             echo "  --mysql-user USER      MySQL user to connect as"
             echo "  --mysql-password PASS  MySQL password"
+            echo "  --docker               Use MySQL from Docker container"
             echo "  --cleanup-only         Cleanup test data and exit"
             echo "  --verbose              Enable verbose output"
             echo "  --debug                Enable debug output"
@@ -557,6 +616,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --mysql-socket /tmp/mysql.sock"
             echo "  $0 --mysql-port 3306 --mysql-user root --mysql-password mypass"
             echo "  $0 --simple-only --verbose"
+            echo "  $0 --docker --external-only"
             exit 0
             ;;
         *)
@@ -567,9 +627,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Build MySQL connection arguments
+# Build MySQL connection arguments for admin/root user
 MYSQL_CONN_ARGS="-u $MYSQL_USER"
-
 if [ -n "$MYSQL_PASSWORD" ]; then
     MYSQL_CONN_ARGS="$MYSQL_CONN_ARGS -p$MYSQL_PASSWORD"
 fi
@@ -579,6 +638,9 @@ MYSQL_TRANSPORT_ARGS=""
 if [ -n "$MYSQL_SOCKET" ]; then
     MYSQL_CONN_ARGS="$MYSQL_CONN_ARGS --socket=$MYSQL_SOCKET"
     MYSQL_TRANSPORT_ARGS="--socket=$MYSQL_SOCKET"
+elif [ "$DOCKER" = true ]; then
+    MYSQL_CONN_ARGS="$MYSQL_CONN_ARGS --socket=/var/run/mysqld/mysqld.sock"
+    MYSQL_TRANSPORT_ARGS="--socket=/var/run/mysqld/mysqld.sock"
 elif [ -n "$MYSQL_PORT" ]; then
     MYSQL_CONN_ARGS="$MYSQL_CONN_ARGS --port=$MYSQL_PORT --host=127.0.0.1"
     MYSQL_TRANSPORT_ARGS="--port=$MYSQL_PORT --host=127.0.0.1"
@@ -612,9 +674,11 @@ main() {
         exit 1
     fi
 
-    # Check plugin files
-    if ! check_plugin_files; then
-        exit 1
+    if [ "$DOCKER" = false ]; then
+        # Check plugin files
+        if ! check_plugin_files; then
+            exit 1
+        fi
     fi
 
     # Setup test environment
@@ -622,7 +686,7 @@ main() {
 
     # Test plugins
     if [ "$EXTERNAL_ONLY" = false ]; then
-        if [ "$SIMPLE_PLUGIN_AVAILABLE" = true ]; then
+        if [ "$SIMPLE_PLUGIN_AVAILABLE" = true ] || [ "$DOCKER" = true ]; then
             if ! test_simple_authorization_plugin; then
                 ((total_failures++))
             fi
@@ -632,7 +696,7 @@ main() {
     fi
 
     if [ "$SIMPLE_ONLY" = false ]; then
-        if [ "$EXTERNAL_PLUGIN_AVAILABLE" = true ]; then
+        if [ "$EXTERNAL_PLUGIN_AVAILABLE" = true ] || [ "$DOCKER" = true ]; then
             if ! test_external_authorization_plugin; then
                 ((total_failures++))
             fi

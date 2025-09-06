@@ -77,7 +77,7 @@ FROM INFORMATION_SCHEMA.PLUGINS
 WHERE PLUGIN_NAME = 'simple_authorization';
 
 -- Show plugin system variables
-SHOW VARIABLES LIKE 'simple_auth%';
+SHOW VARIABLES LIKE 'simple_authorization%';
 
 -- ============================================================================
 -- Test 1: Plugin in IGNORE mode (should use built-in authorization)
@@ -86,7 +86,7 @@ SHOW VARIABLES LIKE 'simple_auth%';
 SELECT 'Test 1: Plugin in IGNORE mode' as test_name;
 
 -- Configure plugin to ignore all requests
-SET GLOBAL simple_auth_mode = 'ignore';
+SET GLOBAL simple_authorization_mode = 'ignore';
 
 -- Test access as testuser (should fail - no built-in privileges)
 -- This would normally be tested by connecting as testuser, but for this demo
@@ -100,11 +100,11 @@ SELECT 'testuser should be denied access to testdb (no built-in privileges)' as 
 SELECT 'Test 2: Plugin in GRANT mode with user allowlist' as test_name;
 
 -- Configure plugin to grant access to testuser
-SET GLOBAL simple_auth_allow_user = 'testuser';
-SET GLOBAL simple_auth_mode = 'grant';
+SET GLOBAL simple_authorization_allow_user = 'testuser';
+SET GLOBAL simple_authorization_mode = 'grant';
 
 -- Show current configuration
-SHOW VARIABLES LIKE 'simple_auth%';
+SHOW VARIABLES LIKE 'simple_authorization%';
 
 SELECT 'testuser should now have access to all databases' as expected_result;
 
@@ -115,12 +115,12 @@ SELECT 'testuser should now have access to all databases' as expected_result;
 SELECT 'Test 3: Plugin in GRANT mode with user and database allowlist' as test_name;
 
 -- Configure plugin to grant access to testuser only on testdb
-SET GLOBAL simple_auth_allow_user = 'testuser';
-SET GLOBAL simple_auth_allow_db = 'testdb';
-SET GLOBAL simple_auth_mode = 'grant';
+SET GLOBAL simple_authorization_allow_user = 'testuser';
+SET GLOBAL simple_authorization_allow_db = 'testdb';
+SET GLOBAL simple_authorization_mode = 'grant';
 
 -- Show current configuration
-SHOW VARIABLES LIKE 'simple_auth%';
+SHOW VARIABLES LIKE 'simple_authorization%';
 
 SELECT 'testuser should have access to testdb but not otherdb' as expected_result;
 
@@ -131,7 +131,7 @@ SELECT 'testuser should have access to testdb but not otherdb' as expected_resul
 SELECT 'Test 4: Plugin in DENY mode' as test_name;
 
 -- Configure plugin to deny all access
-SET GLOBAL simple_auth_mode = 'deny';
+SET GLOBAL simple_authorization_mode = 'deny';
 
 SELECT 'All users should be denied access (plugin overrides built-in privileges)' as expected_result;
 
@@ -142,9 +142,9 @@ SELECT 'All users should be denied access (plugin overrides built-in privileges)
 SELECT 'Test 5: Multiple user scenarios' as test_name;
 
 -- Reset to selective grant mode
-SET GLOBAL simple_auth_allow_user = 'testuser';
-SET GLOBAL simple_auth_allow_db = 'testdb'; 
-SET GLOBAL simple_auth_mode = 'grant';
+SET GLOBAL simple_authorization_allow_user = 'testuser';
+SET GLOBAL simple_authorization_allow_db = 'testdb'; 
+SET GLOBAL simple_authorization_mode = 'grant';
 
 SELECT 'testuser: access to testdb via plugin' as scenario_1;
 SELECT 'otheruser: no plugin access, no built-in privileges -> denied' as scenario_2;
@@ -172,11 +172,11 @@ SELECT 'Plugin should handle various SQL operations and access types' as expecte
 SELECT 'Test 7: Error handling and edge cases' as test_name;
 
 -- Test with NULL/empty configuration
-SET GLOBAL simple_auth_allow_user = '';
-SET GLOBAL simple_auth_allow_db = '';
+SET GLOBAL simple_authorization_allow_user = '';
+SET GLOBAL simple_authorization_allow_db = '';
 
 -- Test with invalid mode (should default to ignore)
-SET GLOBAL simple_auth_mode = 'invalid_mode';
+SET GLOBAL simple_authorization_mode = 'invalid_mode';
 
 SELECT 'Plugin should handle invalid configuration gracefully' as expected_result;
 
@@ -211,7 +211,7 @@ SELECT 'Plugin should survive uninstall/reinstall cycle' as expected_result;
 SELECT 'Performance Test: Measuring plugin overhead' as test_name;
 
 -- Reset plugin to ignore mode for baseline
-SET GLOBAL simple_auth_mode = 'ignore';
+SET GLOBAL simple_authorization_mode = 'ignore';
 
 -- Measure time for multiple queries without plugin intervention
 SET @start_time = NOW(6);
@@ -226,8 +226,8 @@ SELECT COUNT(*) FROM testdb.test_table;
 SET @ignore_time = TIMESTAMPDIFF(MICROSECOND, @start_time, NOW(6));
 
 -- Now test with plugin active
-SET GLOBAL simple_auth_mode = 'grant';
-SET GLOBAL simple_auth_allow_user = USER();
+SET GLOBAL simple_authorization_mode = 'grant';
+SET GLOBAL simple_authorization_allow_user = USER();
 
 SET @start_time = NOW(6);
 

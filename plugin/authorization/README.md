@@ -73,9 +73,9 @@ This allows plugins to:
 INSTALL PLUGIN simple_authorization SONAME 'simple_authorization.so';
 
 -- Configure plugin
-SET GLOBAL simple_auth_allow_user = 'testuser';
-SET GLOBAL simple_auth_allow_db = 'testdb';
-SET GLOBAL simple_auth_mode = 'grant';
+SET GLOBAL simple_authorization_allow_user = 'testuser';
+SET GLOBAL simple_authorization_allow_db = 'testdb';
+SET GLOBAL simple_authorization_mode = 'grant';
 
 -- Test access
 -- User 'testuser' will now have access to 'testdb' even without built-in privileges
@@ -186,9 +186,9 @@ CREATE DATABASE testdb;
 
 -- Install and configure plugin
 INSTALL PLUGIN simple_authorization SONAME 'simple_authorization.so';
-SET GLOBAL simple_auth_allow_user = 'testuser';
-SET GLOBAL simple_auth_allow_db = 'testdb';  
-SET GLOBAL simple_auth_mode = 'grant';
+SET GLOBAL simple_authorization_allow_user = 'testuser';
+SET GLOBAL simple_authorization_allow_db = 'testdb';  
+SET GLOBAL simple_authorization_mode = 'grant';
 
 -- Test access (should succeed due to plugin)
 -- Connect as testuser
@@ -203,7 +203,7 @@ SHOW PLUGINS;
 SELECT * FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME LIKE '%authorization%';
 
 -- Check plugin variables
-SHOW VARIABLES LIKE 'simple_auth%';
+SHOW VARIABLES LIKE 'simple_authorization%';
 ```
 
 ### Debugging
@@ -254,7 +254,7 @@ tail -f /var/log/mysql/error.log | grep -i authorization
 
 2. **Authorization not working**
    - Verify plugin is loaded: `SHOW PLUGINS`
-   - Check plugin variables: `SHOW VARIABLES LIKE 'plugin_name%'`
+   - Check plugin variables: `SHOW VARIABLES LIKE 'simple_authorization%'`
    - Enable debug logging to see authorization decisions
 
 3. **Performance issues**

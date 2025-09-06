@@ -37,9 +37,9 @@
   
   Configuration:
   INSTALL PLUGIN simple_authorization SONAME 'simple_authorization.so';
-  SET GLOBAL simple_auth_allow_user = 'testuser';
-  SET GLOBAL simple_auth_allow_db = 'testdb';
-  SET GLOBAL simple_auth_mode = 'grant';  -- 'grant', 'deny', or 'ignore'
+  SET GLOBAL simple_authorization_allow_user = 'testuser';
+  SET GLOBAL simple_authorization_allow_db = 'testdb';
+  SET GLOBAL simple_authorization_mode = 'grant';  -- 'grant', 'deny', or 'ignore'
 */
 
 #include <mysql/plugin.h>
@@ -73,9 +73,9 @@ static const char* get_process_id() {
 }
 
 // Plugin system variables
-static char *simple_auth_allow_user = nullptr;
-static char *simple_auth_allow_db = nullptr;
-static char *simple_auth_mode = nullptr;
+static char *simple_authorization_allow_user = nullptr;
+static char *simple_authorization_allow_db = nullptr;
+static char *simple_authorization_mode = nullptr;
 
 // Plugin initialization flag
 static bool plugin_initialized = false;
@@ -100,25 +100,25 @@ static mysql_authorization_result_t simple_authorization_logic(
   }
   
   // Check plugin mode
-  if (!simple_auth_mode) {
+  if (!simple_authorization_mode) {
     return MYSQL_AUTHORIZATION_IGNORE;
   }
   
-  if (strcmp(simple_auth_mode, "ignore") == 0) {
+  if (strcmp(simple_authorization_mode, "ignore") == 0) {
     return MYSQL_AUTHORIZATION_IGNORE;
-  } else if (strcmp(simple_auth_mode, "deny") == 0) {
+  } else if (strcmp(simple_authorization_mode, "deny") == 0) {
     return MYSQL_AUTHORIZATION_DENY;
-  } else if (strcmp(simple_auth_mode, "grant") == 0) {
+  } else if (strcmp(simple_authorization_mode, "grant") == 0) {
     // Check if user is in allow list
-    if (!simple_auth_allow_user || !event->user.str) {
+    if (!simple_authorization_allow_user || !event->user.str) {
       return MYSQL_AUTHORIZATION_IGNORE;
     }
 
-    if (strcmp(simple_auth_allow_user, event->user.str) == 0) {
+    if (strcmp(simple_authorization_allow_user, event->user.str) == 0) {
       // Check if database is in allow list (if specified)
-      if (simple_auth_allow_db && strlen(simple_auth_allow_db) > 0) {
+      if (simple_authorization_allow_db && strlen(simple_authorization_allow_db) > 0) {
         // Database restriction is set
-        if (event->database.str && strcmp(simple_auth_allow_db, event->database.str) == 0) {
+        if (event->database.str && strcmp(simple_authorization_allow_db, event->database.str) == 0) {
           // For DB_ACCESS, grant full access to the allowed database
           if (event->event_subclass == MYSQL_AUTHORIZATION_DB_ACCESS) {
             return MYSQL_AUTHORIZATION_GRANT;
@@ -193,7 +193,7 @@ static int simple_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]
 // System variables
 static MYSQL_SYSVAR_STR(
   allow_user,                                  // name
-  simple_auth_allow_user,                     // var
+  simple_authorization_allow_user,                     // var
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,  // flags
   "User name to grant access to",             // comment
   nullptr,                                     // check
@@ -203,7 +203,7 @@ static MYSQL_SYSVAR_STR(
 
 static MYSQL_SYSVAR_STR(
   allow_db,                                    // name
-  simple_auth_allow_db,                       // var
+  simple_authorization_allow_db,                       // var
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,  // flags
   "Database name to grant access to",         // comment
   nullptr,                                     // check
@@ -213,7 +213,7 @@ static MYSQL_SYSVAR_STR(
 
 static MYSQL_SYSVAR_STR(
   mode,                                        // name
-  simple_auth_mode,                           // var
+  simple_authorization_mode,                           // var
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,  // flags
   "Authorization mode: grant, deny, or ignore", // comment
   nullptr,                                     // check

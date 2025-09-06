@@ -24,6 +24,9 @@ MYSQL_DATABASE=testdb
 SIMPLE_AUTH_MODE=grant
 SIMPLE_AUTH_ALLOW_USER=testuser
 SIMPLE_AUTH_ALLOW_DB=testdb
+
+# Auto-reinitialize data dir if incomplete (dev only)
+AUTO_REINIT=1
 EOF
 ```
 
@@ -149,7 +152,7 @@ docker-compose ps
 ### Plugin Not Working
 ```bash
 # Check plugin installation
-docker-compose exec mysql mysql -u root -p -e "SHOW PLUGINS LIKE '%authorization%';"
+docker-compose exec mysql mysql -u root -p -e "SELECT PLUGIN_STATUS FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME LIKE '%authorization%';"
 
 # Enable MySQL general logging
 docker-compose exec mysql mysql -u root -p -e "SET GLOBAL general_log = ON;"

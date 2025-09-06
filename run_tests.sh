@@ -30,6 +30,7 @@ print_usage() {
     echo "  simple     - Test only simple authorization plugin"
     echo "  external   - Test only external authorization plugin"
     echo "  all        - Run all available tests"
+    echo "  docker     - Run tests with Docker container"
     echo "  cleanup    - Cleanup test environment only"
     echo "  help       - Show this help message"
     echo ""
@@ -40,12 +41,14 @@ print_usage() {
     echo "  --password PASS  MySQL password (default: empty)"
     echo "  --verbose        Enable verbose output"
     echo "  --debug          Enable debug output"
+    echo "  --help           Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 basic"
     echo "  $0 tcp --port 3306 --user mysql --password secret"
     echo "  $0 simple --socket /var/lib/mysql/mysql.sock --verbose"
     echo "  $0 cleanup"
+    echo "  $0 docker --external-only"
 }
 
 # Default values
@@ -60,7 +63,7 @@ DEBUG=""
 COMMAND=""
 while [[ $# -gt 0 ]]; do
     case $1 in
-        basic|tcp|simple|external|all|cleanup|help)
+        basic|tcp|docker|simple|external|all|cleanup|help)
             if [ -n "$COMMAND" ]; then
                 echo "Error: Multiple commands specified" >&2
                 exit 1
@@ -128,6 +131,13 @@ case $COMMAND in
         else
             "$TEST_SCRIPT" --mysql-port "$MYSQL_PORT" --mysql-user "$MYSQL_USER" $VERBOSE $DEBUG
         fi
+        ;;
+
+    docker)
+        echo -e "${GREEN}Running authorization plugin tests via Docker...${NC}"
+        echo "Socket: $MYSQL_SOCKET"
+        echo ""
+        "$TEST_SCRIPT" --docker --mysql-socket "/var/run/mysqld/mysqld.sock" $VERBOSE $DEBUG
         ;;
 
     simple)

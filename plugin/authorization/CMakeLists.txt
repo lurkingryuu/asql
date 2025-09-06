@@ -30,10 +30,24 @@ MYSQL_ADD_PLUGIN(simple_authorization
   MODULE_OUTPUT_NAME "simple_authorization")
 
 # External authorization plugin (advanced example with HTTP)
-# Uncomment if you have curl and jsoncpp libraries available
-# MYSQL_ADD_PLUGIN(external_authorization 
-#   external_authorization.cc
-#   MODULE_ONLY
-#   MODULE_OUTPUT_NAME "external_authorization")
-#
-# TARGET_LINK_LIBRARIES(external_authorization curl jsoncpp)
+# Requires curl and jsoncpp (present in Dockerfile build image)
+MYSQL_ADD_PLUGIN(external_authorization 
+  external_authorization.cc
+  MODULE_ONLY
+  MODULE_OUTPUT_NAME "external_authorization")
+
+# Ensure jsoncpp headers are found (Ubuntu installs under /usr/include/jsoncpp)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(JSONCPP jsoncpp)
+endif()
+
+# Link against curl and jsoncpp; add include dirs for jsoncpp
+if(JSONCPP_FOUND)
+  target_include_directories(external_authorization PRIVATE ${JSONCPP_INCLUDE_DIRS})
+  TARGET_LINK_LIBRARIES(external_authorization curl ${JSONCPP_LIBRARIES})
+else()
+  # Fallback include path commonly used on Debian/Ubuntu
+  target_include_directories(external_authorization PRIVATE /usr/include/jsoncpp)
+  TARGET_LINK_LIBRARIES(external_authorization curl jsoncpp)
+endif()

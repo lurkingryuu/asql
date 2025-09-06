@@ -7,8 +7,8 @@ WORKDIR /app
 # Copy package files
 COPY docker/auth-service/package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install dependencies (no lockfile present)
+RUN npm install --omit=dev --no-audit --no-fund
 
 # Copy application code
 COPY docker/auth-service/server.js ./
