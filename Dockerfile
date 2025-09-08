@@ -45,6 +45,8 @@ RUN apt-get update && apt-get install -y \
 # Create directories
 RUN mkdir -p $MYSQL_BUILD_DIR $MYSQL_SOURCE_DIR $MYSQL_INSTALL_DIR
 
+VOLUME $MYSQL_BUILD_DIR
+
 WORKDIR /tmp
 
 # Copy local MySQL source code

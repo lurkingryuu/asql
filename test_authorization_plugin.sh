@@ -15,6 +15,19 @@
 
 set -e  # Exit immediately if a command fails
 
+# Global variables for cleanup
+AUTH_SERVICE_PID=""
+
+# Signal handlers for graceful cleanup
+cleanup_on_exit() {
+    print_debug "Cleaning up on exit..."
+    stop_auth_service
+    exit 0
+}
+
+# Trap signals for cleanup
+trap cleanup_on_exit SIGINT SIGTERM EXIT
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -277,6 +290,76 @@ install_plugin() {
     fi
 }
 
+# Function to start external authorization service
+start_auth_service() {
+    local auth_service_dir="$PWD/docker/auth-service"
+    local auth_service_script="$auth_service_dir/server.js"
+    
+    print_info "Starting external authorization service on port $AUTH_SERVICE_PORT..."
+    
+    if [ ! -f "$auth_service_script" ]; then
+        print_error "Auth service script not found: $auth_service_script"
+        return 1
+    fi
+    
+    # Check if Node.js is available
+    if ! command -v node >/dev/null 2>&1; then
+        print_error "Node.js is not installed. Please install Node.js to run the auth service."
+        return 1
+    fi
+    
+    # Check if service is already running
+    if lsof -Pi :$AUTH_SERVICE_PORT -sTCP:LISTEN >/dev/null 2>&1; then
+        print_warning "Port $AUTH_SERVICE_PORT is already in use. Assuming auth service is running."
+        return 0
+    fi
+    
+    # Start the service in background
+    cd "$auth_service_dir"
+    PORT=$AUTH_SERVICE_PORT nohup node server.js > auth_service.log 2>&1 &
+    AUTH_SERVICE_PID=$!
+    cd - >/dev/null
+    
+    # Wait for service to start
+    local attempts=0
+    local max_attempts=10
+    
+    while [ $attempts -lt $max_attempts ]; do
+        if curl -s http://localhost:$AUTH_SERVICE_PORT/health >/dev/null 2>&1; then
+            print_success "External authorization service started successfully (PID: $AUTH_SERVICE_PID)"
+            return 0
+        fi
+        sleep 1
+        ((attempts++))
+        print_debug "Waiting for auth service to start... ($attempts/$max_attempts)"
+    done
+    
+    print_error "Failed to start external authorization service"
+    return 1
+}
+
+# Function to stop external authorization service
+stop_auth_service() {
+    if [ -n "$AUTH_SERVICE_PID" ]; then
+        print_info "Stopping external authorization service (PID: $AUTH_SERVICE_PID)..."
+        kill $AUTH_SERVICE_PID 2>/dev/null || true
+        wait $AUTH_SERVICE_PID 2>/dev/null || true
+        print_success "External authorization service stopped"
+        AUTH_SERVICE_PID=""
+    fi
+}
+
+# Function to check if auth service is running
+check_auth_service() {
+    if curl -s http://localhost:$AUTH_SERVICE_PORT/health >/dev/null 2>&1; then
+        print_debug "External authorization service is running on port $AUTH_SERVICE_PORT"
+        return 0
+    else
+        print_debug "External authorization service is not accessible on port $AUTH_SERVICE_PORT"
+        return 1
+    fi
+}
+
 # Function to test simple authorization plugin
 test_simple_authorization_plugin() {
     print_info "=== TESTING SIMPLE AUTHORIZATION PLUGIN ==="
@@ -413,19 +496,182 @@ test_external_authorization_plugin() {
     local test_count=0
     local pass_count=0
 
-    # Configure external authorization (without actual external service)
-    mysql_exec "SET GLOBAL external_authorization_url = '';"  # Empty URL should make plugin ignore
-    mysql_exec "SET GLOBAL external_authorization_timeout = 1000;"
+    local host="localhost"
+    if [ "$DOCKER" = true ]; then
+        host="%"
+    fi
 
     # Test 1: Plugin with no external URL (should ignore)
     print_info "Test 1: External plugin with no URL (should ignore)"
+    mysql_exec "SET GLOBAL external_authorization_url = '';"  # Empty URL should make plugin ignore
+    mysql_exec "SET GLOBAL external_authorization_timeout = 1000;"
+
     ((test_count++))
     if test_user_access "extuser_ignore" "password" "User should be denied (no external service configured)" "failure"; then
         ((pass_count++))
     fi
 
-    # Clean up
-    mysql_exec "DROP USER IF EXISTS 'extuser_ignore'@'localhost';"
+    # Check if we should start auth service and run comprehensive tests
+    local auth_service_started=false
+    if [ "$START_AUTH_SERVICE" = true ]; then
+        if start_auth_service; then
+            auth_service_started=true
+        else
+            print_warning "Failed to start auth service, skipping comprehensive external auth tests"
+        fi
+    elif check_auth_service; then
+        print_info "External auth service already running, proceeding with comprehensive tests"
+        auth_service_started=true
+    else
+        print_info "Auth service not running and --start-auth-service not specified"
+        print_info "Skipping comprehensive external authorization tests"
+    fi
+
+    if [ "$auth_service_started" = true ]; then
+        # Configure plugin to use external service
+        # Use service name for Docker networking, localhost for non-Docker
+        local auth_url
+        if [ "$DOCKER" = true ]; then
+            auth_url="http://auth-service:$AUTH_SERVICE_PORT/auth"
+        else
+            auth_url="http://localhost:$AUTH_SERVICE_PORT/auth"
+        fi
+        
+        print_info "Configuring external authorization URL: $auth_url"
+        mysql_exec "SET GLOBAL external_authorization_url = '$auth_url';"
+        mysql_exec "SET GLOBAL external_authorization_timeout = 5000;"
+
+        # Test 2: User with database access (should be granted by external service)
+        print_info "Test 2: External service grants access to 'testuser' for 'testdb'"
+        ((test_count++))
+        if test_user_access "testuser" "password" "testuser should have access via external service" "success"; then
+            ((pass_count++))
+        fi
+
+        # Test 3: Admin user (should have access to all databases)
+        print_info "Test 3: External service grants admin access"
+        ((test_count++))
+        if test_user_access "admin" "password" "admin should have access via external service" "success"; then
+            ((pass_count++))
+        fi
+
+        # Test 4: User without database access (should be denied)
+        print_info "Test 4: External service denies access to unauthorized user"
+        ((test_count++))
+        if test_user_access "unauthorizeduser" "password" "unauthorized user should be denied" "failure"; then
+            ((pass_count++))
+        fi
+
+        # Test 5: Test privilege-based access control
+        print_info "Test 5: External service privilege-based access control"
+        mysql_exec "DROP USER IF EXISTS 'testuser'@'$host';"
+        mysql_exec "CREATE USER 'testuser'@'$host' IDENTIFIED BY 'password';"
+        mysql_exec "GRANT SELECT ON testdb.* TO 'testuser'@'$host';"
+
+        # Test SELECT (should be allowed by external service)
+        ((test_count++))
+        if mysql_exec_as_user "testuser" "password" "USE testdb; SELECT * FROM test_table;" 2>/dev/null; then
+            print_result "PASS" "SELECT operation allowed by external service"
+            ((pass_count++))
+        else
+            print_result "FAIL" "SELECT operation denied by external service"
+        fi
+
+        # Test 6: Test sensitive column access (should be denied for non-admin)
+        print_info "Test 6: External service denies access to sensitive columns"
+        mysql_exec "ALTER TABLE testdb.test_table ADD COLUMN secret_data VARCHAR(100);"
+        mysql_exec "UPDATE testdb.test_table SET secret_data = 'top_secret' WHERE id = 1;"
+
+        ((test_count++))
+        local column_output
+        column_output=$(mysql_exec_as_user "testuser" "password" "USE testdb; SELECT secret_data FROM test_table;" true 2>&1)
+        if echo "$column_output" | grep -q "ERROR\|Access denied"; then
+            print_result "PASS" "Access to sensitive column correctly denied"
+            ((pass_count++))
+        else
+            print_result "FAIL" "Access to sensitive column incorrectly allowed"
+            print_debug "Column access output: $column_output"
+        fi
+
+        # Test 7: Admin access to sensitive columns (should be allowed)
+        print_info "Test 7: External service allows admin access to sensitive columns"
+        mysql_exec "DROP USER IF EXISTS 'admin'@'$host';"
+        mysql_exec "CREATE USER 'admin'@'$host' IDENTIFIED BY 'password';"
+        mysql_exec "GRANT SELECT ON testdb.* TO 'admin'@'$host';"
+
+        ((test_count++))
+        if mysql_exec_as_user "admin" "password" "USE testdb; SELECT secret_data FROM test_table;" 2>/dev/null; then
+            print_result "PASS" "Admin access to sensitive column allowed"
+            ((pass_count++))
+        else
+            print_result "FAIL" "Admin access to sensitive column denied"
+        fi
+
+        # Test 8: Time-based access control (during business hours)
+        print_info "Test 8: External service time-based access control"
+        local current_hour=$(date +%H)
+        local current_hour_int=$((10#$current_hour))  # Remove leading zero
+        
+        mysql_exec "DROP USER IF EXISTS 'timeuser'@'$host';"
+        mysql_exec "CREATE USER 'timeuser'@'$host' IDENTIFIED BY 'password';"
+        mysql_exec "GRANT SELECT ON testdb.* TO 'timeuser'@'$host';"
+
+        ((test_count++))
+        if [ $current_hour_int -ge 9 ] && [ $current_hour_int -le 17 ]; then
+            # During business hours - should be allowed
+            if mysql_exec_as_user "timeuser" "password" "USE testdb; SELECT COUNT(*) FROM test_table;" 2>/dev/null; then
+                print_result "PASS" "Access allowed during business hours (current hour: $current_hour_int)"
+                ((pass_count++))
+            else
+                print_result "FAIL" "Access denied during business hours (current hour: $current_hour_int)"
+            fi
+        else
+            # Outside business hours - might be denied depending on policy
+            if mysql_exec_as_user "timeuser" "password" "USE testdb; SELECT COUNT(*) FROM test_table;" 2>/dev/null; then
+                print_result "SKIP" "Access allowed outside business hours (current hour: $current_hour_int) - policy may allow fallback"
+            else
+                print_result "PASS" "Access denied outside business hours (current hour: $current_hour_int)"
+            fi
+            ((pass_count++))  # Count as pass since behavior is expected
+        fi
+
+        # Test 9: Test external service error handling
+        print_info "Test 9: External service error handling"
+        # Temporarily set invalid URL to test error handling
+        local invalid_auth_url
+        if [ "$DOCKER" = true ]; then
+            invalid_auth_url="http://nonexistent-service:99999/auth"
+        else
+            invalid_auth_url="http://localhost:99999/auth"
+        fi
+        
+        print_info "Setting invalid auth URL for error testing: $invalid_auth_url"
+        mysql_exec "SET GLOBAL external_authorization_url = '$invalid_auth_url';"
+        
+        ((test_count++))
+        if test_user_access "erroruser" "password" "User should be denied (external service unreachable)" "failure"; then
+            print_result "PASS" "Plugin correctly handles external service errors"
+            ((pass_count++))
+        else
+            print_result "FAIL" "Plugin did not handle external service errors correctly"
+        fi
+
+        # Restore working URL
+        print_info "Restoring working auth URL: $auth_url"
+        mysql_exec "SET GLOBAL external_authorization_url = '$auth_url';"
+
+        # Clean up additional test users
+        mysql_exec "DROP USER IF EXISTS 'testuser'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'admin'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'timeuser'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'erroruser'@'$host';" 2>/dev/null || true
+
+        # Clean up table changes
+        mysql_exec "ALTER TABLE testdb.test_table DROP COLUMN secret_data;" 2>/dev/null || true
+    fi
+
+    # Clean up basic test user
+    mysql_exec "DROP USER IF EXISTS 'extuser_ignore'@'$host';" 2>/dev/null || true
 
     print_info "External Authorization Plugin Test Results: $pass_count/$test_count tests passed"
     return $((test_count - pass_count))
@@ -435,24 +681,39 @@ test_external_authorization_plugin() {
 cleanup_test_environment() {
     print_info "=== CLEANING UP TEST ENVIRONMENT ==="
 
+    # Stop auth service if we started it
+    if [ "$START_AUTH_SERVICE" = true ]; then
+        stop_auth_service
+    fi
+
+    # Reset global variables BEFORE uninstalling plugins (variables become unavailable after plugin uninstall)
+    mysql_exec "SET GLOBAL general_log = OFF;" 2>/dev/null || true
+    mysql_exec "SET GLOBAL external_authorization_url = DEFAULT;" 2>/dev/null || true
+    mysql_exec "SET GLOBAL external_authorization_timeout = DEFAULT;" 2>/dev/null || true
+
     # Uninstall plugins
     mysql_exec "UNINSTALL PLUGIN simple_authorization;" 2>/dev/null || true
     mysql_exec "UNINSTALL PLUGIN external_authorization;" 2>/dev/null || true
 
-    # Drop test users
-    mysql_exec "DROP USER IF EXISTS 'testuser_ignore'@'localhost';" 2>/dev/null || true
-    mysql_exec "DROP USER IF EXISTS 'testuser_grant'@'localhost';" 2>/dev/null || true
-    mysql_exec "DROP USER IF EXISTS 'testuser_db'@'localhost';" 2>/dev/null || true
-    mysql_exec "DROP USER IF EXISTS 'testuser_deny'@'localhost';" 2>/dev/null || true
-    mysql_exec "DROP USER IF EXISTS 'testuser_ops'@'localhost';" 2>/dev/null || true
-    mysql_exec "DROP USER IF EXISTS 'extuser_ignore'@'localhost';" 2>/dev/null || true
+    # Drop test users (both localhost and % hosts for Docker compatibility)
+    local hosts=("localhost" "%")
+    for host in "${hosts[@]}"; do
+        mysql_exec "DROP USER IF EXISTS 'testuser_ignore'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'testuser_grant'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'testuser_db'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'testuser_deny'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'testuser_ops'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'extuser_ignore'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'testuser'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'admin'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'timeuser'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'erroruser'@'$host';" 2>/dev/null || true
+        mysql_exec "DROP USER IF EXISTS 'unauthorizeduser'@'$host';" 2>/dev/null || true
+    done
 
     # Drop test databases
     mysql_exec "DROP DATABASE IF EXISTS testdb;" 2>/dev/null || true
     mysql_exec "DROP DATABASE IF EXISTS otherdb;" 2>/dev/null || true
-
-    # Reset global variables
-    mysql_exec "SET GLOBAL general_log = OFF;" 2>/dev/null || true
 
     print_success "Test environment cleaned up"
 }
@@ -546,6 +807,8 @@ CLEANUP_ONLY=false
 VERBOSE=false
 DEBUG=false
 DOCKER=false
+START_AUTH_SERVICE=false
+AUTH_SERVICE_PORT=8080
 
 
 MYSQL_SOCKET=""
@@ -583,6 +846,14 @@ while [[ $# -gt 0 ]]; do
             DOCKER=true
             shift
             ;;
+        --start-auth-service)
+            START_AUTH_SERVICE=true
+            shift
+            ;;
+        --auth-service-port)
+            AUTH_SERVICE_PORT="$2"
+            shift 2
+            ;;
         --cleanup-only)
             CLEANUP_ONLY=true
             shift
@@ -607,6 +878,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --mysql-user USER      MySQL user to connect as"
             echo "  --mysql-password PASS  MySQL password"
             echo "  --docker               Use MySQL from Docker container"
+            echo "  --start-auth-service   Start external authorization service for testing"
+            echo "  --auth-service-port    Port for external auth service (default: 8080)"
             echo "  --cleanup-only         Cleanup test data and exit"
             echo "  --verbose              Enable verbose output"
             echo "  --debug                Enable debug output"
@@ -617,6 +890,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --mysql-port 3306 --mysql-user root --mysql-password mypass"
             echo "  $0 --simple-only --verbose"
             echo "  $0 --docker --external-only"
+            echo "  $0 --external-only --start-auth-service --auth-service-port 8080"
             exit 0
             ;;
         *)

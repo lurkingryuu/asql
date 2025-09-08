@@ -24,6 +24,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql-data
       - mysql_logs:/var/log/mysql
+      - mysql_build:/build/mysql
       # Use my.cnf baked into the image; entrypoint edits it based on env
 
     # Networks
@@ -135,6 +136,10 @@ volumes:
   mysql_logs:
     driver: local
     name: mysql_auth_plugin_logs
+  
+  mysql_build:
+    driver: local
+    name: mysql_auth_plugin_build
 
 # =============================================================================
 # Networks

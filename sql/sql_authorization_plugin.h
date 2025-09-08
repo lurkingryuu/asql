@@ -73,12 +73,14 @@ mysql_authorization_result_t mysql_authorization_plugin_check(
     THD *thd,
     mysql_authorization_event_subclass_t event_subclass,
     const char *user,
-    const char *host, 
+    const char *host,
     const char *database,
     const char *table,
     const char *column,
     const char *routine,
     unsigned long privileges,
-    bool is_procedure);
+    bool is_procedure,
+    mysql_authorization_event::mysql_authorization_requirement_t requirement_mode,
+    unsigned long missing_privileges);
 
 #endif /* SQL_AUTHORIZATION_PLUGIN_INCLUDED */

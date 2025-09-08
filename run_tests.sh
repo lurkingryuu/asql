@@ -29,6 +29,7 @@ print_usage() {
     echo "  tcp        - Run tests with TCP connection"
     echo "  simple     - Test only simple authorization plugin"
     echo "  external   - Test only external authorization plugin"
+    echo "  external-full - Test external authorization with auth service"
     echo "  all        - Run all available tests"
     echo "  docker     - Run tests with Docker container"
     echo "  cleanup    - Cleanup test environment only"
@@ -47,6 +48,7 @@ print_usage() {
     echo "  $0 basic"
     echo "  $0 tcp --port 3306 --user mysql --password secret"
     echo "  $0 simple --socket /var/lib/mysql/mysql.sock --verbose"
+    echo "  $0 external-full --verbose"
     echo "  $0 cleanup"
     echo "  $0 docker --external-only"
 }
@@ -63,7 +65,7 @@ DEBUG=""
 COMMAND=""
 while [[ $# -gt 0 ]]; do
     case $1 in
-        basic|tcp|docker|simple|external|all|cleanup|help)
+        basic|tcp|docker|simple|external|external-full|all|cleanup|help)
             if [ -n "$COMMAND" ]; then
                 echo "Error: Multiple commands specified" >&2
                 exit 1
@@ -152,6 +154,14 @@ case $COMMAND in
         echo "Socket: $MYSQL_SOCKET"
         echo ""
         "$TEST_SCRIPT" --external-only --mysql-socket "$MYSQL_SOCKET" $VERBOSE $DEBUG
+        ;;
+
+    external-full)
+        echo -e "${GREEN}Running comprehensive external authorization plugin tests...${NC}"
+        echo "Socket: $MYSQL_SOCKET"
+        echo "Note: This will start the external authorization service"
+        echo ""
+        "$TEST_SCRIPT" --external-only --start-auth-service --mysql-socket "$MYSQL_SOCKET" $VERBOSE $DEBUG
         ;;
 
     all)

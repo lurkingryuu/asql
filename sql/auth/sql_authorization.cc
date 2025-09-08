@@ -2296,7 +2296,9 @@ bool check_access(THD *thd, Access_bitmask want_access, const char *db,
       nullptr, // column
       nullptr, // routine
       want_access,
-      false    // is_procedure
+      false,   // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+      want_access
   );
 
   
@@ -2542,8 +2544,17 @@ bool is_granted_table_access(THD *thd, Access_bitmask required_acl,
       nullptr, // column
       nullptr, // routine
       required_acl,
-      false    // is_procedure
+      false,   // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+      required_acl
   );
+  
+  if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
+    DBUG_PRINT("info", ("Access granted for %s.%s by authorization plugin",
+                       db_name, table_name));
+    return true;
+  }
+  
   // permission denied
   return false;
 }
@@ -3845,7 +3856,9 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
               nullptr, // column
               nullptr, // routine
               want_access,
-              false    // is_procedure
+              false,   // is_procedure
+              mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+              want_access
             );
             if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
               continue;
@@ -3920,7 +3933,9 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
             nullptr, // column
             nullptr, // routine
             want_access,
-            false    // is_procedure
+            false,   // is_procedure
+            mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+            want_access
           );
           if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
             continue;
@@ -3976,7 +3991,9 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
             nullptr, // column
             nullptr, // routine
             want_access,
-            false    // is_procedure
+            false,   // is_procedure
+            mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+            want_access
           );
           if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
             continue;
@@ -4012,7 +4029,9 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
             nullptr, // column
             nullptr, // routine
             want_access,
-            false    // is_procedure
+            false,   // is_procedure
+            mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+            want_access
           );
           if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
             continue;
@@ -4302,7 +4321,9 @@ err:
       field_name,
       nullptr, // routine
       want_access,
-      false    // is_procedure
+      false,   // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+      want_access
     );
     if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
       return false;
@@ -4427,7 +4448,9 @@ bool check_grant_db(THD *thd, const char *db,
       nullptr, // column
       nullptr, // routine
       DB_ACLS,
-      false    // is_procedure
+      false,   // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE,
+      0
     );
     if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
       error = false;
@@ -4568,7 +4591,9 @@ static bool check_routine_level_acl(THD *thd, const char *db, const char *name,
       nullptr, // column
       nullptr, // routine
       SHOW_PROC_ACLS,
-      false    // is_procedure
+      false,   // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE,
+      0
     );
     if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
       no_routine_acl = false;
@@ -6080,7 +6105,9 @@ bool check_global_access(THD *thd, Access_bitmask want_access) {
       nullptr, // column
       nullptr, // routine
       want_access,
-      false    // is_procedure
+      false,   // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF,
+      want_access
   );
   if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
     return false;

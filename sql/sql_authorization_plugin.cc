@@ -87,7 +87,9 @@ mysql_authorization_result_t mysql_authorization_plugin_check(
     const char *column,
     const char *routine,
     unsigned long privileges,
-    bool is_procedure) {
+    bool is_procedure,
+    mysql_authorization_event::mysql_authorization_requirement_t requirement_mode,
+    unsigned long missing_privileges) {
 
   std::lock_guard<std::mutex> lock(authorization_plugins_mutex);
   
@@ -118,6 +120,8 @@ mysql_authorization_result_t mysql_authorization_plugin_check(
   
   event.privileges = privileges;
   event.is_procedure = is_procedure;
+  event.requirement_mode = requirement_mode;
+  event.missing_privileges = missing_privileges;
   
   // Get SQL command and query from THD
   event.sql_command = thd ? static_cast<int>(thd->lex->sql_command) : -1;
