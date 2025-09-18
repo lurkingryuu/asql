@@ -51,3 +51,20 @@ else()
   target_include_directories(external_authorization PRIVATE /usr/include/jsoncpp)
   TARGET_LINK_LIBRARIES(external_authorization curl jsoncpp)
 endif()
+
+# Cedar authorization plugin (Cedar policy engine integration)
+# Requires curl and jsoncpp libraries
+MYSQL_ADD_PLUGIN(cedar_authorization
+  cedar_authorization.cc
+  MODULE_ONLY
+  MODULE_OUTPUT_NAME "cedar_authorization")
+
+# Link against curl and jsoncpp; add include dirs for jsoncpp
+if(JSONCPP_FOUND)
+  target_include_directories(cedar_authorization PRIVATE ${JSONCPP_INCLUDE_DIRS})
+  TARGET_LINK_LIBRARIES(cedar_authorization curl ${JSONCPP_LIBRARIES})
+else()
+  # Fallback include path commonly used on Debian/Ubuntu
+  target_include_directories(cedar_authorization PRIVATE /usr/include/jsoncpp)
+  TARGET_LINK_LIBRARIES(cedar_authorization curl jsoncpp)
+endif()

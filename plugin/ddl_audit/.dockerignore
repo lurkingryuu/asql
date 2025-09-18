@@ -1,0 +1,12 @@
+# Ignore unnecessary files for Docker build
+node_modules
+npm-debug.log
+.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+build_and_test.sh
+test_ddl_audit.sql
+ddl_audit.cc
+CMakeLists.txt

@@ -72,7 +72,7 @@
 #include <json/json.h>
 #include <sstream>
 #include <string>
-#include "json/value.h"
+#include <json/value.h>
 
 // Plugin system variables
 static char *external_authorization_url;
