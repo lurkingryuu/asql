@@ -207,47 +207,62 @@ static std::string event_type_to_string(mysql_authorization_event_subclass_t eve
   }
 }
 
+// UID helpers to keep uniform across plugins
+static std::string buildUserUID(const mysql_authorization_event *event) {
+  std::string user = event->user.str ? std::string(event->user.str, event->user.length) : std::string("unknown");
+  std::string host = event->host.str ? std::string(event->host.str, event->host.length) : std::string("%");
+  return user + "@" + host;
+}
+
+static std::string makeDbId(const mysql_authorization_event *event) {
+  return event->database.str ? std::string(event->database.str, event->database.length) : std::string("");
+}
+
+static std::string makeTableId(const mysql_authorization_event *event) {
+  std::string db = makeDbId(event);
+  std::string tbl = event->table.str ? std::string(event->table.str, event->table.length) : std::string("");
+  if (!db.empty() && !tbl.empty()) return db + "." + tbl;
+  if (!tbl.empty()) return tbl;
+  return db.empty() ? std::string("unknown") : db;
+}
+
+static std::string makeColumnId(const mysql_authorization_event *event) {
+  std::string tbl = makeTableId(event);
+  std::string col = event->column.str ? std::string(event->column.str, event->column.length) : std::string("");
+  if (!col.empty()) return tbl + "." + col;
+  return tbl;
+}
+
 // Create resource identifier based on event type
 std::string createResourceIdentifier(const mysql_authorization_event *event) {
   std::string resource;
   
   switch (event->event_subclass) {
-    case MYSQL_AUTHORIZATION_DB_ACCESS:
-      if (event->database.str) {
-        resource = "Database::\"" + std::string(event->database.str) + "\"";
-      } else {
-        resource = "Database::\"unknown\"";
-      }
+    case MYSQL_AUTHORIZATION_DB_ACCESS: {
+      std::string db = makeDbId(event);
+      resource = "Database::\"" + (db.empty() ? std::string("unknown") : db) + "\"";
       break;
-      
-    case MYSQL_AUTHORIZATION_TABLE_ACCESS:
-      if (event->table.str) {
-        resource = "Table::\"" + std::string(event->table.str) + "\"";
-      } else if (event->database.str) {
-        resource = "Database::\"" + std::string(event->database.str) + "\"";
-      } else {
+    }
+    case MYSQL_AUTHORIZATION_TABLE_ACCESS: {
+      std::string table_id = makeTableId(event);
+      if (!table_id.empty())
+        resource = "Table::\"" + table_id + "\"";
+      else
         resource = "Table::\"unknown\"";
-      }
       break;
-      
-    case MYSQL_AUTHORIZATION_COLUMN_ACCESS:
-      if (event->column.str) {
-        resource = "Column::\"" + std::string(event->column.str) + "\"";
-      } else if (event->table.str) {
-        resource = "Table::\"" + std::string(event->table.str) + "\"";
-      } else {
-        resource = "Column::\"unknown\"";
-      }
+    }
+    case MYSQL_AUTHORIZATION_COLUMN_ACCESS: {
+      std::string column_id = makeColumnId(event);
+      resource = "Column::\"" + column_id + "\"";
       break;
-      
-    case MYSQL_AUTHORIZATION_ROUTINE_ACCESS:
-      if (event->routine.str) {
-        resource = "Routine::\"" + std::string(event->routine.str) + "\"";
-      } else {
-        resource = "Routine::\"unknown\"";
-      }
+    }
+    case MYSQL_AUTHORIZATION_ROUTINE_ACCESS: {
+      std::string db = makeDbId(event);
+      std::string routine = event->routine.str ? std::string(event->routine.str) : std::string("unknown");
+      if (!db.empty()) routine = db + "." + routine;
+      resource = "Routine::\"" + routine + "\"";
       break;
-      
+    }
     default:
       resource = "Unknown::\"unknown\"";
       break;
@@ -284,8 +299,8 @@ static int check_access_cedar(const mysql_authorization_event *event) {
     return -1;  // signal IGNORE
   }
 
-  // Extract user hash (using username for now)
-  std::string user_hash_value = event->user.str ? event->user.str : "unknown";
+  // Build principal UID (user@host)
+  std::string user_uid_value = buildUserUID(event);
 
   // Create resource identifier
   std::string resource_identifier = createResourceIdentifier(event);
@@ -293,7 +308,7 @@ static int check_access_cedar(const mysql_authorization_event *event) {
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Cedar authorization check: user=%s, resource=%s, privileges=%lu",
-                          user_hash_value.c_str(), resource_identifier.c_str(), event->privileges);
+                          user_uid_value.c_str(), resource_identifier.c_str(), event->privileges);
   }
 
   // Initialize libcurl
@@ -320,7 +335,7 @@ static int check_access_cedar(const mysql_authorization_event *event) {
 
   // Create JSON payload
   Json::Value json_payload;
-  json_payload["principal"] = "User::\"" + user_hash_value + "\"";
+  json_payload["principal"] = "User::\"" + user_uid_value + "\"";
   json_payload["action"] = "Action::\"CedarAuth\"";  // Single action for Cedar
   json_payload["resource"] = resource_identifier;
   json_payload["privileges"] = privileges_to_json(event->privileges);

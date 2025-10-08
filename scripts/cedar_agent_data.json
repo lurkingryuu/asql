@@ -1,0 +1,258 @@
+[
+  {
+    "uid": {
+      "type": "User",
+      "id": "alice_user"
+    },
+    "attrs": {
+      "department": "Engineering",
+      "role": "Developer"
+    },
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "User",
+      "id": "bob_user"
+    },
+    "attrs": {
+      "department": "Sales",
+      "role": "Project Manager"
+    },
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "User",
+      "id": "charlie_user"
+    },
+    "attrs": {
+      "department": "IT",
+      "role": "Support"
+    },
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "User",
+      "id": "hr_manager"
+    },
+    "attrs": {
+      "department": "HR",
+      "role": "Manager"
+    },
+    "parents": [
+      {
+        "type": "Role",
+        "id": "HRRole"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "User",
+      "id": "developer"
+    },
+    "attrs": {
+      "department": "Engineering",
+      "role": "Developer"
+    },
+    "parents": [
+      {
+        "type": "Role",
+        "id": "DeveloperRole"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "User",
+      "id": "analyst"
+    },
+    "attrs": {
+      "department": "Analytics",
+      "role": "Data Analyst"
+    },
+    "parents": [
+      {
+        "type": "Role",
+        "id": "AnalystRole"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "User",
+      "id": "admin_user"
+    },
+    "attrs": {
+      "department": "IT",
+      "role": "Administrator",
+      "clearance_level": "admin"
+    },
+    "parents": [
+      {
+        "type": "Role",
+        "id": "AdminRole"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "Role",
+      "id": "HRRole"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "Role",
+      "id": "DeveloperRole"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "Role",
+      "id": "AnalystRole"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "Role",
+      "id": "AdminRole"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "Database",
+      "id": "company_db"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "Database",
+      "id": "reporting_db"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "Table",
+      "id": "employees"
+    },
+    "attrs": {
+      "database": "company_db",
+      "classification": "sensitive"
+    },
+    "parents": [
+      {
+        "type": "Database",
+        "id": "company_db"
+      },
+      {
+        "type": "TableGroup",
+        "id": "HRTables"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "Table",
+      "id": "projects"
+    },
+    "attrs": {
+      "database": "company_db"
+    },
+    "parents": [
+      {
+        "type": "Database",
+        "id": "company_db"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "Table",
+      "id": "payroll"
+    },
+    "attrs": {
+      "database": "company_db",
+      "classification": "highly_sensitive"
+    },
+    "parents": [
+      {
+        "type": "Database",
+        "id": "company_db"
+      },
+      {
+        "type": "TableGroup",
+        "id": "HRTables"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "Table",
+      "id": "audit_log"
+    },
+    "attrs": {
+      "database": "company_db"
+    },
+    "parents": [
+      {
+        "type": "Database",
+        "id": "company_db"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "Table",
+      "id": "public_reports"
+    },
+    "attrs": {
+      "database": "reporting_db"
+    },
+    "parents": [
+      {
+        "type": "Database",
+        "id": "reporting_db"
+      }
+    ]
+  },
+  {
+    "uid": {
+      "type": "TableGroup",
+      "id": "HRTables"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "ActionGroup",
+      "id": "ProjectModify"
+    },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": {
+      "type": "ActionGroup",
+      "id": "DataModify"
+    },
+    "attrs": {},
+    "parents": []
+  }
+]
+

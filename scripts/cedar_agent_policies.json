@@ -1,0 +1,277 @@
+[
+  {
+    "id": "policy-alice-employees-select",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "alice_user"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Select"
+      }
+    },
+    "resource": {
+      "op": "==",
+      "entity": {
+        "type": "Table",
+        "id": "employees"
+      }
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-bob-projects-select",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "bob_user"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Select"
+      }
+    },
+    "resource": {
+      "op": "==",
+      "entity": {
+        "type": "Table",
+        "id": "projects"
+      }
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-bob-projects-insert",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "bob_user"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Insert"
+      }
+    },
+    "resource": {
+      "op": "==",
+      "entity": {
+        "type": "Table",
+        "id": "projects"
+      }
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-bob-projects-update",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "bob_user"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Update"
+      }
+    },
+    "resource": {
+      "op": "==",
+      "entity": {
+        "type": "Table",
+        "id": "projects"
+      }
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-hr-manager-employees-select",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "hr_manager"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Select"
+      }
+    },
+    "resource": {
+      "op": "in",
+      "entity": {
+        "type": "TableGroup",
+        "id": "HRTables"
+      }
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-hr-manager-employees-insert",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "hr_manager"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Insert"
+      }
+    },
+    "resource": {
+      "op": "in",
+      "entity": {
+        "type": "TableGroup",
+        "id": "HRTables"
+      }
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-hr-manager-employees-update",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "hr_manager"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Update"
+      }
+    },
+    "resource": {
+      "op": "in",
+      "entity": {
+        "type": "TableGroup",
+        "id": "HRTables"
+      }
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-developer-readonly",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "developer"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Select"
+      }
+    },
+    "resource": {
+      "op": "All"
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-analyst-reporting-select",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "analyst"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Select"
+      }
+    },
+    "resource": {
+      "op": "in",
+      "entity": {
+        "type": "Database",
+        "id": "reporting_db"
+      }
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-admin-full-access",
+    "effect": "permit",
+    "principal": {
+      "op": "==",
+      "entity": {
+        "type": "User",
+        "id": "admin_user"
+      }
+    },
+    "action": {
+      "op": "All"
+    },
+    "resource": {
+      "op": "All"
+    },
+    "conditions": []
+  },
+  {
+    "id": "policy-payroll-delete-deny",
+    "effect": "forbid",
+    "principal": {
+      "op": "!=",
+      "entity": {
+        "type": "User",
+        "id": "admin_user"
+      }
+    },
+    "action": {
+      "op": "==",
+      "entity": {
+        "type": "Action",
+        "id": "Delete"
+      }
+    },
+    "resource": {
+      "op": "==",
+      "entity": {
+        "type": "Table",
+        "id": "payroll"
+      }
+    },
+    "conditions": []
+  }
+]
+

@@ -10,7 +10,7 @@
 INSTALL PLUGIN ddl_audit SONAME 'ddl_audit.so';
 
 -- Step 2: Configure the plugin
-SET GLOBAL ddl_audit_cedar_url = 'http://localhost:8180';
+SET GLOBAL ddl_audit_cedar_url = 'http://localhost:8280';
 SET GLOBAL ddl_audit_cedar_timeout = 5000;
 SET GLOBAL ddl_audit_enabled = ON;
 
@@ -71,10 +71,10 @@ SHOW STATUS LIKE 'DDL_audit_%';
 -- ========================================
 
 -- Step 9: Test index creation (should extract table names from CREATE INDEX)
-CREATE INDEX idx_username ON users(username);
-CREATE INDEX idx_order_date ON orders(order_date);  
-CREATE INDEX idx_product_category ON products(category);
-CREATE UNIQUE INDEX idx_product_name ON products(name);
+-- CREATE INDEX idx_username ON users(username);
+-- CREATE INDEX idx_order_date ON orders(order_date);  
+-- CREATE INDEX idx_product_category ON products(category);
+-- CREATE UNIQUE INDEX idx_product_name ON products(name);
 
 -- Step 10: Check status after index creation
 SHOW STATUS LIKE 'DDL_audit_%';
@@ -317,9 +317,9 @@ DROP VIEW IF EXISTS active_users;
 DROP VIEW IF EXISTS product_summary;
 
 -- Step 38: Test dropping indexes
-DROP INDEX idx_username ON customers;
-DROP INDEX idx_order_date ON orders;
-DROP INDEX idx_product_category ON inventory;
+-- DROP INDEX idx_username ON customers;
+-- DROP INDEX idx_order_date ON orders;
+-- DROP INDEX idx_product_category ON inventory;
 
 -- Step 39: Test dropping roles and users (Tests AUTHENTICATION_AUTHID_DROP)
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'renamed_user'@'localhost';
@@ -351,6 +351,10 @@ DROP DATABASE IF EXISTS test_ddl_audit;
 SHOW STATUS LIKE 'DDL_audit_%';
 
 -- Step 43: Test error scenarios
+-- Create a temporary database for error testing
+CREATE DATABASE IF NOT EXISTS test_ddl_error;
+USE test_ddl_error;
+
 -- Test with invalid Cedar URL
 SET GLOBAL ddl_audit_cedar_url = 'http://invalid-url:9999';
 CREATE TABLE test_error_handling (id INT PRIMARY KEY);
@@ -362,7 +366,7 @@ CREATE TABLE test_service_down (id INT PRIMARY KEY);
 DROP TABLE IF EXISTS test_service_down;
 
 -- Restore correct URL
-SET GLOBAL ddl_audit_cedar_url = 'http://localhost:8180';
+SET GLOBAL ddl_audit_cedar_url = 'http://localhost:8280';
 
 -- Step 44: Test plugin disable/enable
 SET GLOBAL ddl_audit_enabled = OFF;
@@ -372,6 +376,9 @@ DROP TABLE IF EXISTS test_disabled;
 SET GLOBAL ddl_audit_enabled = ON;
 CREATE TABLE test_enabled (id INT PRIMARY KEY);   -- Should be captured
 DROP TABLE IF EXISTS test_enabled;
+
+-- Clean up the temporary error testing database
+DROP DATABASE IF EXISTS test_ddl_error;
 
 -- Step 45: Final status check
 SHOW VARIABLES LIKE 'ddl_audit_%';

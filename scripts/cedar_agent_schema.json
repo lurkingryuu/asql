@@ -1,0 +1,108 @@
+{
+  "": {
+    "entityTypes": {
+      "User": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "department": {
+              "type": "String",
+              "required": false
+            },
+            "role": {
+              "type": "String",
+              "required": false
+            },
+            "clearance_level": {
+              "type": "String",
+              "required": false
+            }
+          }
+        },
+        "memberOfTypes": ["Role", "Group"]
+      },
+      "Role": {
+        "memberOfTypes": []
+      },
+      "Group": {
+        "memberOfTypes": []
+      },
+      "Table": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "database": {
+              "type": "String",
+              "required": false
+            },
+            "classification": {
+              "type": "String",
+              "required": false
+            }
+          }
+        },
+        "memberOfTypes": ["Database", "TableGroup"]
+      },
+      "Database": {
+        "memberOfTypes": []
+      },
+      "TableGroup": {
+        "memberOfTypes": []
+      },
+      "ActionGroup": {
+        "memberOfTypes": []
+      }
+    },
+    "actions": {
+      "Select": {
+        "appliesTo": {
+          "principalTypes": ["User", "Role"],
+          "resourceTypes": ["Table", "Database"]
+        }
+      },
+      "Insert": {
+        "appliesTo": {
+          "principalTypes": ["User", "Role"],
+          "resourceTypes": ["Table", "Database"]
+        }
+      },
+      "Update": {
+        "appliesTo": {
+          "principalTypes": ["User", "Role"],
+          "resourceTypes": ["Table", "Database"]
+        }
+      },
+      "Delete": {
+        "appliesTo": {
+          "principalTypes": ["User", "Role"],
+          "resourceTypes": ["Table", "Database"]
+        }
+      },
+      "Create": {
+        "appliesTo": {
+          "principalTypes": ["User", "Role"],
+          "resourceTypes": ["Table", "Database"]
+        }
+      },
+      "Drop": {
+        "appliesTo": {
+          "principalTypes": ["User", "Role"],
+          "resourceTypes": ["Table", "Database"]
+        }
+      },
+      "Alter": {
+        "appliesTo": {
+          "principalTypes": ["User", "Role"],
+          "resourceTypes": ["Table", "Database"]
+        }
+      },
+      "Execute": {
+        "appliesTo": {
+          "principalTypes": ["User", "Role"],
+          "resourceTypes": ["Table", "Database"]
+        }
+      }
+    }
+  }
+}
+

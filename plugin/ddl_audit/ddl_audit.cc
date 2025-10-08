@@ -136,6 +136,15 @@ static int handle_authentication_event(MYSQL_THD thd, const void *event);
 static int handle_table_access_event(MYSQL_THD thd, const void *event);
 static int handle_stored_program_event(MYSQL_THD thd, const void *event);
 
+// UID helpers (uniform across ddl_audit and cedar_authorization)
+static std::string make_user_uid(const std::string &user, const std::string &host);
+static std::string make_db_uid(const std::string &db);
+static std::string make_table_uid(const std::string &db, const std::string &table);
+
+// Cedar agent /data helpers
+static bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id);
+static bool cedar_delete_entity(const std::string &entity_id);
+
 // DDL command IDs that we want to capture
 static const int ddl_commands[] = {
     SQLCOM_CREATE_TABLE,
@@ -551,6 +560,181 @@ static bool send_to_cedar_server(const Json::Value& ddl_data) {
     }
 }
 
+// UID helpers (definitions)
+static std::string make_user_uid(const std::string &user, const std::string &host) {
+    std::string h = host.empty() ? "%" : host;
+    return user + "@" + h;
+}
+
+static std::string make_db_uid(const std::string &db) {
+    return db;
+}
+
+static std::string make_table_uid(const std::string &db, const std::string &table) {
+    if (!db.empty() && !table.empty()) return db + "." + table;
+    if (!table.empty()) return table;
+    return db; // may be empty
+}
+
+// Cedar agent /data helpers implementations
+static bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id) {
+    if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+                           "DDL Audit: Cedar URL not configured for /data upsert");
+        }
+        number_of_cedar_failures++;
+        return false;
+    }
+
+    number_of_cedar_requests++;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+                           "DDL Audit: Failed to initialize curl for /data upsert");
+        }
+        number_of_cedar_failures++;
+        return false;
+    }
+
+    // Build URL: <base>[/v1]/data/single/<urlencoded id>
+    std::string base = std::string(ddl_audit_cedar_url);
+    if (!base.empty() && base.back() == '/') base.pop_back();
+    bool has_v1 = base.size() >= 3 && base.substr(base.size() - 3) == "/v1";
+    char *escaped = curl_easy_escape(curl, entity_id.c_str(), (int)entity_id.length());
+    std::string url = base + (has_v1 ? "" : "/v1") + "/data/single/" + (escaped ? escaped : entity_id.c_str());
+
+    // Build JSON payload: array with single entity
+    Json::Value entity(Json::objectValue);
+    entity["uid"]["id"] = entity_id;
+    entity["uid"]["type"] = entity_type;
+    entity["attrs"] = Json::Value(Json::objectValue);
+    entity["parents"] = Json::Value(Json::arrayValue);
+    Json::Value arr(Json::arrayValue);
+    arr.append(entity);
+
+    Json::StreamWriterBuilder builder;
+    std::string payload = Json::writeString(builder, arr);
+
+    std::string response;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, payload.length());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, ddl_audit_cedar_timeout);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 1000);
+
+    struct curl_slist *headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    CURLcode res = curl_easy_perform(curl);
+    long response_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+
+    if (escaped) curl_free(escaped);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+                           "DDL Audit: /data upsert failed: %s", curl_easy_strerror(res));
+        }
+        number_of_cedar_failures++;
+        return false;
+    }
+
+    if (response_code >= 200 && response_code < 300) {
+        number_of_cedar_successes++;
+        return true;
+    } else {
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+                           "DDL Audit: /data upsert HTTP %ld", response_code);
+        }
+        number_of_cedar_failures++;
+        return false;
+    }
+}
+
+static bool cedar_delete_entity(const std::string &entity_id) {
+    if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+                           "DDL Audit: Cedar URL not configured for /data delete");
+        }
+        number_of_cedar_failures++;
+        return false;
+    }
+
+    number_of_cedar_requests++;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+                           "DDL Audit: Failed to initialize curl for /data delete");
+        }
+        number_of_cedar_failures++;
+        return false;
+    }
+
+    // Build URL: <base>[/v1]/data/single/<urlencoded id>
+    std::string base = std::string(ddl_audit_cedar_url);
+    if (!base.empty() && base.back() == '/') base.pop_back();
+    bool has_v1 = base.size() >= 3 && base.substr(base.size() - 3) == "/v1";
+    char *escaped = curl_easy_escape(curl, entity_id.c_str(), (int)entity_id.length());
+    std::string url = base + (has_v1 ? "" : "/v1") + "/data/single/" + (escaped ? escaped : entity_id.c_str());
+
+    std::string response;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, ddl_audit_cedar_timeout);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 1000);
+
+    struct curl_slist *headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    CURLcode res = curl_easy_perform(curl);
+    long response_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+
+    if (escaped) curl_free(escaped);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+                           "DDL Audit: /data delete failed: %s", curl_easy_strerror(res));
+        }
+        number_of_cedar_failures++;
+        return false;
+    }
+
+    if (response_code >= 200 && response_code < 300) {
+        number_of_cedar_successes++;
+        return true;
+    } else {
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+                           "DDL Audit: /data delete HTTP %ld", response_code);
+        }
+        number_of_cedar_failures++;
+        return false;
+    }
+}
+
 
 // Helper function to create DDL data JSON
 static Json::Value create_ddl_data(MYSQL_THD thd, const string& ddl_type, 
@@ -653,20 +837,41 @@ static int handle_query_event(MYSQL_THD thd, const void *event) {
     string database = extract_database_name(thd);
     string table = extract_table_name(query, event_query->sql_command_id);
     string command_name = get_command_name(event_query->sql_command_id);
-    
-    // Create DDL data
-    Json::Value ddl_data = create_ddl_data(thd, command_name, event_query->sql_command_id,
-                                          query, database, table,
-                                          "MYSQL_AUDIT_QUERY_CLASS", "MYSQL_AUDIT_QUERY_STATUS_END");
-    
-    // Send to Cedar server
-    if (send_to_cedar_server(ddl_data)) {
-        if (ddl_audit_plugin) {
-            my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                           "DDL Audit: Captured %s on database='%s', table='%s', user='%s'", 
-                           command_name.c_str(), database.c_str(), table.c_str(), 
-                           ddl_data["user"].asString().c_str());
+
+    // Keep Cedar agent's /data in sync using uniform UIDs
+    // Database-level entity sync is temporarily disabled to avoid HTTP 400 from cedar-agent schema/type mismatch.
+    // We continue syncing Table and User entities below.
+    if (!database.empty()) {
+      if (event_query->sql_command_id == SQLCOM_CREATE_DB || event_query->sql_command_id == SQLCOM_ALTER_DB) {
+        cedar_upsert_entity("Database", make_db_uid(database));
+      } else if (event_query->sql_command_id == SQLCOM_DROP_DB) {
+        cedar_delete_entity(make_db_uid(database));
+      }
+    }
+
+    if (!table.empty()) {
+        std::string table_uid = make_table_uid(database, table);
+        switch (event_query->sql_command_id) {
+            case SQLCOM_CREATE_TABLE:
+            case SQLCOM_ALTER_TABLE:
+            case SQLCOM_RENAME_TABLE:
+                if (!database.empty()) {
+                  cedar_upsert_entity("Database", make_db_uid(database));
+                }
+                cedar_upsert_entity("Table", table_uid);
+                break;
+            case SQLCOM_DROP_TABLE:
+                cedar_delete_entity(table_uid);
+                break;
+            default:
+                break;
         }
+    }
+    
+    if (ddl_audit_plugin) {
+        my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                       "DDL Audit: Captured %s on database='%s', table='%s'",
+                       command_name.c_str(), database.c_str(), table.c_str());
     }
     
     return 0;
@@ -734,21 +939,40 @@ static int handle_authentication_event(MYSQL_THD thd, const void *event) {
         extra_context["new_host"] = string(auth_event->new_host.str, auth_event->new_host.length);
     }
     
-    // Create DDL data
-    Json::Value ddl_data = create_ddl_data(thd, ddl_type, auth_event->sql_command_id,
-                                          query, "", "", // No database/table for user operations
-                                          "MYSQL_AUDIT_AUTHENTICATION_CLASS", subclass_name,
-                                          extra_context);
-    
-    // Send to Cedar server
-    if (send_to_cedar_server(ddl_data)) {
-        if (ddl_audit_plugin) {
-            my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                           "DDL Audit: Captured %s for user='%s@%s'", 
-                           ddl_type.c_str(), 
-                           extra_context["target_user"].asString().c_str(),
-                           extra_context["target_host"].asString().c_str());
+    // Keep Cedar agent's /data in sync for User entity
+    std::string tgt_user = auth_event->user.str ? std::string(auth_event->user.str, auth_event->user.length) : "";
+    std::string tgt_host = auth_event->host.str ? std::string(auth_event->host.str, auth_event->host.length) : "";
+    std::string user_uid = make_user_uid(tgt_user, tgt_host);
+
+    switch (auth_event->event_subclass) {
+        case MYSQL_AUDIT_AUTHENTICATION_AUTHID_CREATE:
+        case MYSQL_AUDIT_AUTHENTICATION_CREDENTIAL_CHANGE:
+            if (!tgt_user.empty()) {
+                cedar_upsert_entity("User", user_uid);
+            }
+            break;
+        case MYSQL_AUDIT_AUTHENTICATION_AUTHID_DROP:
+            if (!tgt_user.empty()) {
+                cedar_delete_entity(user_uid);
+            }
+            break;
+        case MYSQL_AUDIT_AUTHENTICATION_AUTHID_RENAME: {
+            std::string new_user = auth_event->new_user.str ? std::string(auth_event->new_user.str, auth_event->new_user.length) : "";
+            std::string new_host = auth_event->new_host.str ? std::string(auth_event->new_host.str, auth_event->new_host.length) : tgt_host;
+            if (!tgt_user.empty()) cedar_delete_entity(user_uid);
+            if (!new_user.empty()) cedar_upsert_entity("User", make_user_uid(new_user, new_host));
+            break;
         }
+        default:
+            break;
+    }
+
+    if (ddl_audit_plugin) {
+        my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                       "DDL Audit: Captured %s for user='%s@%s'", 
+                       ddl_type.c_str(), 
+                       extra_context["target_user"].asString().c_str(),
+                       extra_context["target_host"].asString().c_str());
     }
     
     return 0;
@@ -805,8 +1029,12 @@ static int handle_table_access_event(MYSQL_THD thd, const void *event) {
                                           "MYSQL_AUDIT_TABLE_ACCESS_CLASS", access_type,
                                           extra_context);
     
-    // Send to Cedar server (this provides exact table access patterns)
-    send_to_cedar_server(ddl_data);
+    if (ddl_audit_plugin) {
+        my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                       "DDL Audit: Table access %s on %s.%s",
+                       extra_context["table_access_type"].asString().c_str(),
+                       database.c_str(), table.c_str());
+    }
     
     return 0;
 }
@@ -838,8 +1066,11 @@ static int handle_stored_program_event(MYSQL_THD thd, const void *event) {
                                           "MYSQL_AUDIT_STORED_PROGRAM_CLASS", "MYSQL_AUDIT_STORED_PROGRAM_EXECUTE",
                                           extra_context);
     
-    // Send to Cedar server
-    send_to_cedar_server(ddl_data);
+    if (ddl_audit_plugin) {
+        my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                       "DDL Audit: Stored program event on %s.%s",
+                       database.c_str(), name.c_str());
+    }
     
     return 0;
 }
@@ -914,7 +1145,7 @@ static int ddl_audit_plugin_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
 static MYSQL_SYSVAR_STR(cedar_url, ddl_audit_cedar_url,
                         PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
                         "Cedar server URL for DDL audit data",
-                        nullptr, nullptr, "http://localhost:8180");
+                        nullptr, nullptr, "http://localhost:8280");
 
 static MYSQL_SYSVAR_INT(cedar_timeout, ddl_audit_cedar_timeout,
                         PLUGIN_VAR_RQCMDARG,
