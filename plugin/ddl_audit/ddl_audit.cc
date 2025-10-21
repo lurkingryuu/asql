@@ -79,6 +79,7 @@
 
 #include "sql/auth/auth_acls.h"
 #include "sql/sql_class.h"
+#include "sql/sql_lex.h"
 #include "sql/protocol_classic.h"
 #include "my_dbug.h"
 #include "violite.h"
@@ -91,6 +92,7 @@
 #include "my_sys.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "thr_mutex.h"
+#include "sql/table.h"
 
 #include <ctime>
 #include <algorithm>
@@ -322,13 +324,99 @@ static void update_ddl_counters(int sql_command_id) {
     }
 }
 
-// Helper function to extract database name from thread context
-static string extract_database_name(MYSQL_THD thd) {
-    // Get database from current database context
-    if (thd && thd->db().str) {
+// Helper function to extract database name from LEX structure or thread context
+static string extract_database_name_from_lex(MYSQL_THD thd, int sql_command_id) {
+    if (!thd || !thd->lex) {
+        return "";
+    }
+    
+    LEX *lex = thd->lex;
+    
+    // For CREATE_DATABASE and DROP_DATABASE, use the name from LEX
+    // This handles IF NOT EXISTS and all other modifiers automatically
+    if (sql_command_id == SQLCOM_CREATE_DB || sql_command_id == SQLCOM_DROP_DB || 
+        sql_command_id == SQLCOM_ALTER_DB) {
+        if (lex->name.str && lex->name.length > 0) {
+            return string(lex->name.str, lex->name.length);
+        }
+        return "";
+    }
+    
+    // For other commands, get database from current database context
+    if (thd->db().str) {
         return string(thd->db().str, thd->db().length);
     }
     return "";
+}
+
+// Helper function to extract user information from LEX structure
+static void extract_users_from_lex(MYSQL_THD thd, int sql_command_id, 
+                                  vector<pair<string, string>>& users) {
+    if (!thd || !thd->lex) {
+        return;
+    }
+    
+    LEX *lex = thd->lex;
+    
+    // For user-related commands, extract from users_list
+    // This handles all SQL syntax variations automatically (IF NOT EXISTS, multiple users, etc.)
+    if (sql_command_id == SQLCOM_CREATE_USER || sql_command_id == SQLCOM_DROP_USER ||
+        sql_command_id == SQLCOM_ALTER_USER || sql_command_id == SQLCOM_RENAME_USER) {
+        
+        List_iterator<LEX_USER> user_list_it(lex->users_list);
+        LEX_USER *lex_user;
+        
+        while ((lex_user = user_list_it++)) {
+            string user_name = "";
+            string user_host = "";
+            
+            if (lex_user->user.str && lex_user->user.length > 0) {
+                user_name = string(lex_user->user.str, lex_user->user.length);
+            }
+            if (lex_user->host.str && lex_user->host.length > 0) {
+                user_host = string(lex_user->host.str, lex_user->host.length);
+            }
+            
+            if (!user_name.empty()) {
+                users.push_back(make_pair(user_name, user_host));
+            }
+        }
+    }
+}
+
+// Helper function to extract a table's db/name from LEX (first table)
+static void extract_table_from_lex(MYSQL_THD thd, int sql_command_id,
+                                  string &out_db, string &out_table) {
+    out_db.clear();
+    out_table.clear();
+    if (!thd || !thd->lex) {
+        return;
+    }
+
+    // For table-related statements, the table list is populated in LEX
+    switch (sql_command_id) {
+        case SQLCOM_CREATE_TABLE:
+        case SQLCOM_ALTER_TABLE:
+        case SQLCOM_DROP_TABLE:
+        case SQLCOM_RENAME_TABLE:
+        case SQLCOM_CREATE_INDEX:
+        case SQLCOM_DROP_INDEX: {
+            Table_ref *tr = thd->lex->query_tables;
+            for (; tr != nullptr; tr = tr->next_global) {
+                const char *db = tr->db;
+                const char *name = tr->table_name;
+                if (name && name[0] != '\0') {
+                    out_table.assign(name);
+                    if (db && db[0] != '\0') out_db.assign(db);
+                    break; // use first table occurrence
+                }
+            }
+            break;
+        }
+        default:
+            // Not a table-related statement
+            break;
+    }
 }
 
 // Helper function to extract table name from query using simple parsing
@@ -467,98 +555,98 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb, string* s
     }
 }
 
-// Function to send DDL data to Cedar server
-static bool send_to_cedar_server(const Json::Value& ddl_data) {
-    if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
-        if (ddl_audit_plugin) {
-            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-                           "DDL Audit: Cedar URL not configured");
-        }
-        number_of_cedar_failures++;
-        return false;
-    }
+// // Function to send DDL data to Cedar server
+// static bool send_to_cedar_server(const Json::Value& ddl_data) {
+//     if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
+//         if (ddl_audit_plugin) {
+//             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+//                            "DDL Audit: Cedar URL not configured");
+//         }
+//         number_of_cedar_failures++;
+//         return false;
+//     }
     
-    // Increment request counter
-    number_of_cedar_requests++;
+//     // Increment request counter
+//     number_of_cedar_requests++;
     
-    CURL* curl;
-    CURLcode res;
-    string response;
+//     CURL* curl;
+//     CURLcode res;
+//     string response;
     
-    curl = curl_easy_init();
-    if (!curl) {
-        if (ddl_audit_plugin) {
-            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-                           "DDL Audit: Failed to initialize curl");
-        }
-        number_of_cedar_failures++;
-        return false;
-    }
+//     curl = curl_easy_init();
+//     if (!curl) {
+//         if (ddl_audit_plugin) {
+//             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+//                            "DDL Audit: Failed to initialize curl");
+//         }
+//         number_of_cedar_failures++;
+//         return false;
+//     }
     
-    // Prepare JSON payload
-    Json::StreamWriterBuilder builder;
-    string json_payload = Json::writeString(builder, ddl_data);
+//     // Prepare JSON payload
+//     Json::StreamWriterBuilder builder;
+//     string json_payload = Json::writeString(builder, ddl_data);
     
-    // Create the full URL (append /v1/ddl_audit if not already present)
-    string full_url = string(ddl_audit_cedar_url);
-    if (full_url.find("/v1/ddl_audit") == string::npos) {
-        if (full_url.back() != '/') {
-            full_url += "/";
-        }
-        full_url += "v1/ddl_audit";
-    }
+//     // Create the full URL (append /v1/ddl_audit if not already present)
+//     string full_url = string(ddl_audit_cedar_url);
+//     if (full_url.find("/v1/ddl_audit") == string::npos) {
+//         if (full_url.back() != '/') {
+//             full_url += "/";
+//         }
+//         full_url += "v1/ddl_audit";
+//     }
     
-    // Set curl options
-    curl_easy_setopt(curl, CURLOPT_URL, full_url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, json_payload.length());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, ddl_audit_cedar_timeout);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 1000);
+//     // Set curl options
+//     curl_easy_setopt(curl, CURLOPT_URL, full_url.c_str());
+//     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload.c_str());
+//     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, json_payload.length());
+//     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+//     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+//     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, ddl_audit_cedar_timeout);
+//     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 1000);
     
-    struct curl_slist *headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+//     struct curl_slist *headers = nullptr;
+//     headers = curl_slist_append(headers, "Content-Type: application/json");
+//     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     
-    // Perform the request
-    res = curl_easy_perform(curl);
+//     // Perform the request
+//     res = curl_easy_perform(curl);
     
-    if (res != CURLE_OK) {
-        if (ddl_audit_plugin) {
-            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-                           "DDL Audit: curl_easy_perform() failed: %s", 
-                           curl_easy_strerror(res));
-        }
-        curl_easy_cleanup(curl);
-        number_of_cedar_failures++;
-        return false;
-    }
+//     if (res != CURLE_OK) {
+//         if (ddl_audit_plugin) {
+//             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+//                            "DDL Audit: curl_easy_perform() failed: %s", 
+//                            curl_easy_strerror(res));
+//         }
+//         curl_easy_cleanup(curl);
+//         number_of_cedar_failures++;
+//         return false;
+//     }
     
-    long response_code;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+//     long response_code;
+//     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     
-    // Cleanup
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+//     // Cleanup
+//     curl_slist_free_all(headers);
+//     curl_easy_cleanup(curl);
     
-    if (response_code >= 200 && response_code < 300) {
-        if (ddl_audit_plugin) {
-            my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                           "DDL Audit: Successfully sent DDL data to Cedar server");
-        }
-        number_of_cedar_successes++;
-        return true;
-    } else {
-        if (ddl_audit_plugin) {
-            my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-                           "DDL Audit: Cedar server returned error code: %ld", 
-                           response_code);
-        }
-        number_of_cedar_failures++;
-        return false;
-    }
-}
+//     if (response_code >= 200 && response_code < 300) {
+//         if (ddl_audit_plugin) {
+//             my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+//                            "DDL Audit: Successfully sent DDL data to Cedar server");
+//         }
+//         number_of_cedar_successes++;
+//         return true;
+//     } else {
+//         if (ddl_audit_plugin) {
+//             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
+//                            "DDL Audit: Cedar server returned error code: %ld", 
+//                            response_code);
+//         }
+//         number_of_cedar_failures++;
+//         return false;
+//     }
+// }
 
 // UID helpers (definitions)
 static std::string make_user_uid(const std::string &user, const std::string &host) {
@@ -833,20 +921,82 @@ static int handle_query_event(MYSQL_THD thd, const void *event) {
     // Get query string
     string query(event_query->query.str, event_query->query.length);
     
-    // Extract information from event and context
-    string database = extract_database_name(thd);
-    string table = extract_table_name(query, event_query->sql_command_id);
+    // Extract information from event and context using LEX structure
+    string database = extract_database_name_from_lex(thd, event_query->sql_command_id);
+    string table;
+    // Prefer LEX for table extraction to handle IF [NOT] EXISTS, quoting, etc.
+    extract_table_from_lex(thd, event_query->sql_command_id, database, table);
+    if (table.empty()) {
+        // Fallback to simple parsing only if LEX did not provide a table name
+        table = extract_table_name(query, event_query->sql_command_id);
+    }
     string command_name = get_command_name(event_query->sql_command_id);
 
     // Keep Cedar agent's /data in sync using uniform UIDs
-    // Database-level entity sync is temporarily disabled to avoid HTTP 400 from cedar-agent schema/type mismatch.
-    // We continue syncing Table and User entities below.
-    if (!database.empty()) {
-      if (event_query->sql_command_id == SQLCOM_CREATE_DB || event_query->sql_command_id == SQLCOM_ALTER_DB) {
-        cedar_upsert_entity("Database", make_db_uid(database));
-      } else if (event_query->sql_command_id == SQLCOM_DROP_DB) {
-        cedar_delete_entity(make_db_uid(database));
-      }
+    // Handle database-level entities
+    if (event_query->sql_command_id == SQLCOM_CREATE_DB || event_query->sql_command_id == SQLCOM_ALTER_DB) {
+        if (!database.empty()) {
+            if (ddl_audit_plugin) {
+                my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                               "DDL Audit: Calling cedar_upsert_entity for Database '%s'", database.c_str());
+            }
+            cedar_upsert_entity("Database", make_db_uid(database));
+        } else {
+            if (ddl_audit_plugin) {
+                my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
+                               "DDL Audit: Skipping cedar_upsert_entity for Database - empty database name");
+            }
+        }
+    } else if (event_query->sql_command_id == SQLCOM_DROP_DB) {
+        if (!database.empty()) {
+            if (ddl_audit_plugin) {
+                my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                               "DDL Audit: Calling cedar_delete_entity for Database '%s'", database.c_str());
+            }
+            cedar_delete_entity(make_db_uid(database));
+        } else {
+            if (ddl_audit_plugin) {
+                my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
+                               "DDL Audit: Skipping cedar_delete_entity for Database - empty database name");
+            }
+        }
+    }
+
+    // Handle user-level entities using LEX structure
+    if (event_query->sql_command_id == SQLCOM_CREATE_USER || 
+        event_query->sql_command_id == SQLCOM_ALTER_USER ||
+        event_query->sql_command_id == SQLCOM_RENAME_USER ||
+        event_query->sql_command_id == SQLCOM_DROP_USER) {
+        
+        vector<pair<string, string>> users;
+        extract_users_from_lex(thd, event_query->sql_command_id, users);
+        
+        for (const auto& user_pair : users) {
+            string user_name = user_pair.first;
+            string user_host = user_pair.second;
+            string user_uid = make_user_uid(user_name, user_host);
+            
+            if (event_query->sql_command_id == SQLCOM_DROP_USER) {
+                if (ddl_audit_plugin) {
+                    my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                                   "DDL Audit: Calling cedar_delete_entity for User '%s' (from LEX)", user_uid.c_str());
+                }
+                cedar_delete_entity(user_uid);
+            } else {
+                if (ddl_audit_plugin) {
+                    my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                                   "DDL Audit: Calling cedar_upsert_entity for User '%s' (from LEX)", user_uid.c_str());
+                }
+                cedar_upsert_entity("User", user_uid);
+            }
+        }
+        
+        if (users.empty()) {
+            if (ddl_audit_plugin) {
+                my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
+                               "DDL Audit: No users found in LEX structure for %s", command_name.c_str());
+            }
+        }
     }
 
     if (!table.empty()) {
@@ -878,7 +1028,7 @@ static int handle_query_event(MYSQL_THD thd, const void *event) {
 }
 
 // Handle MYSQL_AUDIT_AUTHENTICATION_CLASS events (user operations)
-static int handle_authentication_event(MYSQL_THD thd, const void *event) {
+static int handle_authentication_event(MYSQL_THD thd [[maybe_unused]], const void *event) {
     const struct mysql_event_authentication *auth_event =
         (const struct mysql_event_authentication *)event;
     
@@ -944,16 +1094,40 @@ static int handle_authentication_event(MYSQL_THD thd, const void *event) {
     std::string tgt_host = auth_event->host.str ? std::string(auth_event->host.str, auth_event->host.length) : "";
     std::string user_uid = make_user_uid(tgt_user, tgt_host);
 
+    if (ddl_audit_plugin) {
+        my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                       "DDL Audit: Auth event subclass=%d, user='%s', host='%s', user_uid='%s'",
+                       auth_event->event_subclass, tgt_user.c_str(), tgt_host.c_str(), user_uid.c_str());
+    }
+
     switch (auth_event->event_subclass) {
         case MYSQL_AUDIT_AUTHENTICATION_AUTHID_CREATE:
         case MYSQL_AUDIT_AUTHENTICATION_CREDENTIAL_CHANGE:
             if (!tgt_user.empty()) {
+                if (ddl_audit_plugin) {
+                    my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                                   "DDL Audit: Calling cedar_upsert_entity for User '%s'", user_uid.c_str());
+                }
                 cedar_upsert_entity("User", user_uid);
+            } else {
+                if (ddl_audit_plugin) {
+                    my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
+                                   "DDL Audit: Skipping cedar_upsert_entity for User - empty username");
+                }
             }
             break;
         case MYSQL_AUDIT_AUTHENTICATION_AUTHID_DROP:
             if (!tgt_user.empty()) {
+                if (ddl_audit_plugin) {
+                    my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                                   "DDL Audit: Calling cedar_delete_entity for User '%s'", user_uid.c_str());
+                }
                 cedar_delete_entity(user_uid);
+            } else {
+                if (ddl_audit_plugin) {
+                    my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
+                                   "DDL Audit: Skipping cedar_delete_entity for User - empty username");
+                }
             }
             break;
         case MYSQL_AUDIT_AUTHENTICATION_AUTHID_RENAME: {

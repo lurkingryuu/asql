@@ -25,6 +25,7 @@ MYSQL_ADD_PLUGIN(ddl_audit
   ddl_audit.cc
   MODULE_ONLY
   MODULE_OUTPUT_NAME "ddl_audit"
+  LINK_LIBRARIES extra::rapidjson
   )
 
 # Link against curl and jsoncpp; add include dirs for jsoncpp
