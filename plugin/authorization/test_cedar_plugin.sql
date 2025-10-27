@@ -5,7 +5,7 @@
 INSTALL PLUGIN cedar_authorization SONAME 'cedar_authorization.so';
 
 -- Step 2: Configure the plugin
-SET GLOBAL cedar_authorization_url = 'http://localhost:8180/v1/is_authorized';
+SET GLOBAL cedar_authorization_url = 'http://localhost:8280/v1/is_authorized';
 SET GLOBAL cedar_authorization_timeout = 5000;
 
 -- Step 3: Verify plugin installation

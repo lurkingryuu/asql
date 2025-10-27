@@ -8,8 +8,7 @@ DROP TABLE IF EXISTS abac_test.sensitive_data;
 DROP DATABASE IF EXISTS abac_test;
 
 -- Remove demo users
-DROP USER IF EXISTS 'user_alice'@'localhost';
-DROP USER IF EXISTS 'user_bob'@'localhost';
-DROP USER IF EXISTS 'user_charlie'@'localhost';
-DROP USER IF EXISTS 'user_charlie'@'198.19.249.3';
+DROP USER IF EXISTS 'user_alice'@'%';
+DROP USER IF EXISTS 'user_bob'@'%';
+DROP USER IF EXISTS 'user_charlie'@'%';
 

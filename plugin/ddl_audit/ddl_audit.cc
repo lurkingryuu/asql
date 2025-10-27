@@ -555,103 +555,11 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb, string* s
     }
 }
 
-// // Function to send DDL data to Cedar server
-// static bool send_to_cedar_server(const Json::Value& ddl_data) {
-//     if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
-//         if (ddl_audit_plugin) {
-//             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-//                            "DDL Audit: Cedar URL not configured");
-//         }
-//         number_of_cedar_failures++;
-//         return false;
-//     }
-    
-//     // Increment request counter
-//     number_of_cedar_requests++;
-    
-//     CURL* curl;
-//     CURLcode res;
-//     string response;
-    
-//     curl = curl_easy_init();
-//     if (!curl) {
-//         if (ddl_audit_plugin) {
-//             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-//                            "DDL Audit: Failed to initialize curl");
-//         }
-//         number_of_cedar_failures++;
-//         return false;
-//     }
-    
-//     // Prepare JSON payload
-//     Json::StreamWriterBuilder builder;
-//     string json_payload = Json::writeString(builder, ddl_data);
-    
-//     // Create the full URL (append /v1/ddl_audit if not already present)
-//     string full_url = string(ddl_audit_cedar_url);
-//     if (full_url.find("/v1/ddl_audit") == string::npos) {
-//         if (full_url.back() != '/') {
-//             full_url += "/";
-//         }
-//         full_url += "v1/ddl_audit";
-//     }
-    
-//     // Set curl options
-//     curl_easy_setopt(curl, CURLOPT_URL, full_url.c_str());
-//     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload.c_str());
-//     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, json_payload.length());
-//     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-//     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-//     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, ddl_audit_cedar_timeout);
-//     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 1000);
-    
-//     struct curl_slist *headers = nullptr;
-//     headers = curl_slist_append(headers, "Content-Type: application/json");
-//     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    
-//     // Perform the request
-//     res = curl_easy_perform(curl);
-    
-//     if (res != CURLE_OK) {
-//         if (ddl_audit_plugin) {
-//             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-//                            "DDL Audit: curl_easy_perform() failed: %s", 
-//                            curl_easy_strerror(res));
-//         }
-//         curl_easy_cleanup(curl);
-//         number_of_cedar_failures++;
-//         return false;
-//     }
-    
-//     long response_code;
-//     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-    
-//     // Cleanup
-//     curl_slist_free_all(headers);
-//     curl_easy_cleanup(curl);
-    
-//     if (response_code >= 200 && response_code < 300) {
-//         if (ddl_audit_plugin) {
-//             my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-//                            "DDL Audit: Successfully sent DDL data to Cedar server");
-//         }
-//         number_of_cedar_successes++;
-//         return true;
-//     } else {
-//         if (ddl_audit_plugin) {
-//             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-//                            "DDL Audit: Cedar server returned error code: %ld", 
-//                            response_code);
-//         }
-//         number_of_cedar_failures++;
-//         return false;
-//     }
-// }
-
 // UID helpers (definitions)
 static std::string make_user_uid(const std::string &user, const std::string &host) {
-    std::string h = host.empty() ? "%" : host;
-    return user + "@" + h;
+    // For DDL audit plugin, we don't include host information in entity UIDs
+    // Host information is available in authorization context via cedar_authorization plugin
+    return user;
 }
 
 static std::string make_db_uid(const std::string &db) {
@@ -979,13 +887,13 @@ static int handle_query_event(MYSQL_THD thd, const void *event) {
             if (event_query->sql_command_id == SQLCOM_DROP_USER) {
                 if (ddl_audit_plugin) {
                     my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                                   "DDL Audit: Calling cedar_delete_entity for User '%s' (from LEX)", user_uid.c_str());
+                                   "DDL Audit: Calling cedar_delete_entity for User '%s'", user_uid.c_str());
                 }
                 cedar_delete_entity(user_uid);
             } else {
                 if (ddl_audit_plugin) {
                     my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                                   "DDL Audit: Calling cedar_upsert_entity for User '%s' (from LEX)", user_uid.c_str());
+                                   "DDL Audit: Calling cedar_upsert_entity for User '%s'", user_uid.c_str());
                 }
                 cedar_upsert_entity("User", user_uid);
             }
