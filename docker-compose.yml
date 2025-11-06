@@ -9,7 +9,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: mysql-auth-plugin
+    container_name: mysql-server
     restart: "unless-stopped"
 
     # Environment variables for authorization plugin configuration
@@ -51,40 +51,6 @@ services:
         echo 'Starting MySQL server from compose file...';
         docker-entrypoint.sh mysqld;
       "
-
-  # =============================================================================
-  # External Authorization Service
-  # =============================================================================
-  auth-service:
-    build:
-      context: .
-      dockerfile: docker/auth-service/Dockerfile
-    container_name: mysql-auth-service
-    restart: unless-stopped
-
-    # Environment variables
-    environment:
-      NODE_ENV: production
-      PORT: 8080
-
-    # Ports
-    ports:
-      - "8080:8080"
-
-    # Networks
-    networks:
-      - mysql-auth-network
-
-    # Health check
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-    # Command
-    command: ["npm", "start"]
 
   # =============================================================================
   # MySQL Client (for testing and administration)
@@ -130,11 +96,11 @@ services:
 volumes:
   mysql_data:
     driver: local
-    name: mysql_auth_plugin_data
+    name: mysqld_data
 
   mysql_logs:
     driver: local
-    name: mysql_auth_plugin_logs
+    name: mysqld_logs
 
 
 # =============================================================================

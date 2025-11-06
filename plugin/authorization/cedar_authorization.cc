@@ -85,6 +85,9 @@
 #include <vector>
 #include <json/value.h>
 
+#include "plugin/authorization/authorization_common.h"
+#include "plugin/authorization/cedar_authorization.h"
+
 #include "sql/auth/auth_acls.h"
 #include "sql/sql_class.h"
 // Needed for Protocol_classic definition used via THD
@@ -120,7 +123,7 @@ static size_t WriteCallback(void *contents, size_t size, size_t nmemb,
 }
 
 // Convert privileges bitmask to string for logging
-static std::string privileges_to_string(unsigned long privileges) {
+std::string privileges_to_string(unsigned long privileges) {
   std::ostringstream oss;
   for (const auto &[privilege, offset] : privs::global_acls_map) {
     if (privileges & (1 << offset)) {
@@ -135,193 +138,7 @@ static std::string privileges_to_string(unsigned long privileges) {
   return "[" + oss.str() + "]";
 }
 
-// Convert privileges to JSON array
-static Json::Value privileges_to_json(unsigned long privileges) {
-  Json::Value privileges_value(Json::arrayValue);
-  for (const auto &[privilege, offset] : privs::global_acls_map) {
-    if (privileges & (1 << offset)) {
-      privileges_value.append(privilege);
-    }
-  }
-  return privileges_value;
-}
-
-// Determine the primary action from privileges bitmask
-// Returns the highest priority privilege that is set
-static std::string get_primary_action(unsigned long privileges) {
-  // Priority order: SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, etc.
-  // This matches the order in the documentation example
-  if (privileges & (1 << 0)) return "SELECT";      // SELECT_ACL
-  if (privileges & (1 << 1)) return "INSERT";      // INSERT_ACL  
-  if (privileges & (1 << 2)) return "UPDATE";      // UPDATE_ACL
-  if (privileges & (1 << 3)) return "DELETE";      // DELETE_ACL
-  if (privileges & (1 << 4)) return "CREATE";      // CREATE_ACL
-  if (privileges & (1 << 5)) return "DROP";        // DROP_ACL
-  if (privileges & (1 << 13)) return "ALTER";      // ALTER_ACL
-  if (privileges & (1 << 6)) return "RELOAD";      // RELOAD_ACL
-  if (privileges & (1 << 7)) return "SHUTDOWN";    // SHUTDOWN_ACL
-  if (privileges & (1 << 8)) return "PROCESS";      // PROCESS_ACL
-  if (privileges & (1 << 9)) return "FILE";         // FILE_ACL
-  if (privileges & (1 << 10)) return "GRANT";      // GRANT_ACL
-  if (privileges & (1 << 11)) return "REFERENCES"; // REFERENCES_ACL
-  if (privileges & (1 << 12)) return "INDEX";       // INDEX_ACL
-  if (privileges & (1 << 14)) return "SHOW DATABASES"; // SHOW_DB_ACL
-  if (privileges & (1 << 15)) return "SUPER";       // SUPER_ACL
-  if (privileges & (1 << 16)) return "CREATE TEMPORARY TABLES"; // CREATE_TMP_ACL
-  if (privileges & (1 << 17)) return "LOCK TABLES"; // LOCK_TABLES_ACL
-  if (privileges & (1 << 18)) return "EXECUTE";     // EXECUTE_ACL
-  if (privileges & (1 << 19)) return "REPLICATION SLAVE"; // REPL_SLAVE_ACL
-  if (privileges & (1 << 20)) return "REPLICATION CLIENT"; // REPL_CLIENT_ACL
-  if (privileges & (1 << 21)) return "CREATE VIEW"; // CREATE_VIEW_ACL
-  if (privileges & (1 << 22)) return "SHOW VIEW";   // SHOW_VIEW_ACL
-  if (privileges & (1 << 23)) return "CREATE ROUTINE"; // CREATE_PROC_ACL
-  if (privileges & (1 << 24)) return "ALTER ROUTINE"; // ALTER_PROC_ACL
-  if (privileges & (1 << 25)) return "CREATE USER"; // CREATE_USER_ACL
-  if (privileges & (1 << 26)) return "EVENT";       // EVENT_ACL
-  if (privileges & (1 << 27)) return "TRIGGER";     // TRIGGER_ACL
-  if (privileges & (1 << 28)) return "CREATE TABLESPACE"; // CREATE_TABLESPACE_ACL
-  if (privileges & (1 << 29)) return "CREATE ROLE"; // CREATE_ROLE_ACL
-  if (privileges & (1 << 30)) return "DROP ROLE";   // DROP_ROLE_ACL
-  
-  // Fallback to first privilege found
-  for (const auto &[privilege, offset] : privs::global_acls_map) {
-    if (privileges & (1 << offset)) {
-      return privilege;
-    }
-  }
-  
-  return "UNKNOWN";
-}
-
-// Get current day as lowercase string
-std::string getDay() {
-  std::time_t currentTime = std::time(0);
-  std::tm* now = std::localtime(&currentTime);
-  char dayString[4];
-  std::strftime(dayString, sizeof(dayString), "%a", now);
-  std::string day(dayString);
-  std::transform(day.begin(), day.end(), day.begin(), ::tolower);
-  return day;
-}
-
-// Get current date as YYYYMMDD integer
-uint32_t getDate() {
-  std::time_t currentTime = std::time(0);
-  std::tm* now = std::localtime(&currentTime);
-  char dateString[9];
-  std::strftime(dateString, sizeof(dateString), "%Y%m%d", now);
-  return std::stoul(dateString);
-}
-
-// Get current time as HHMMSS integer
-uint32_t getTime() {
-  std::time_t currentTime = std::time(0);
-  std::tm* now = std::localtime(&currentTime);
-  char timeString[7];
-  std::strftime(timeString, sizeof(timeString), "%H%M%S", now);
-  return std::stoul(timeString);
-}
-
-// Get client IP address from THD
-std::string getClientIP(THD *thd) {
-  if (!thd || !thd->get_protocol_classic()) {
-    return "unknown";
-  }
-  
-  Vio *vio = thd->get_protocol_classic()->get_vio();
-  if (!vio) {
-    return "unknown";
-  }
-  
-  char ip[INET6_ADDRSTRLEN];
-  uint16_t port;
-  if (!vio_peer_addr(vio, ip, &port, sizeof(ip))) {
-    return std::string(ip);
-  }
-  
-  return "unknown";
-}
-
-// Convert event subclass to string
-static std::string event_type_to_string(mysql_authorization_event_subclass_t event_type) {
-  switch (event_type) {
-    case MYSQL_AUTHORIZATION_DB_ACCESS:
-      return "db_access";
-    case MYSQL_AUTHORIZATION_TABLE_ACCESS:
-      return "table_access";
-    case MYSQL_AUTHORIZATION_COLUMN_ACCESS:
-      return "column_access";
-    case MYSQL_AUTHORIZATION_ROUTINE_ACCESS:
-      return "routine_access";
-    default:
-      return "unknown";
-  }
-}
-
-// UID helpers to keep uniform across plugins
-static std::string buildUserUID(const mysql_authorization_event *event) {
-  // For Cedar authorization plugin, we don't include host information in entity UIDs
-  // Host information is available in authorization context
-  std::string user = event->user.str ? std::string(event->user.str, event->user.length) : std::string("unknown");
-  return user;
-}
-
-static std::string makeDbId(const mysql_authorization_event *event) {
-  return event->database.str ? std::string(event->database.str, event->database.length) : std::string("");
-}
-
-static std::string makeTableId(const mysql_authorization_event *event) {
-  std::string db = makeDbId(event);
-  std::string tbl = event->table.str ? std::string(event->table.str, event->table.length) : std::string("");
-  if (!db.empty() && !tbl.empty()) return db + "." + tbl;
-  if (!tbl.empty()) return tbl;
-  return db.empty() ? std::string("unknown") : db;
-}
-
-static std::string makeColumnId(const mysql_authorization_event *event) {
-  std::string tbl = makeTableId(event);
-  std::string col = event->column.str ? std::string(event->column.str, event->column.length) : std::string("");
-  if (!col.empty()) return tbl + "." + col;
-  return tbl;
-}
-
-// Create resource identifier based on event type
-std::string createResourceIdentifier(const mysql_authorization_event *event) {
-  std::string resource;
-  
-  switch (event->event_subclass) {
-    case MYSQL_AUTHORIZATION_DB_ACCESS: {
-      std::string db = makeDbId(event);
-      resource = "Database::\"" + (db.empty() ? std::string("unknown") : db) + "\"";
-      break;
-    }
-    case MYSQL_AUTHORIZATION_TABLE_ACCESS: {
-      std::string table_id = makeTableId(event);
-      if (!table_id.empty())
-        resource = "Table::\"" + table_id + "\"";
-      else
-        resource = "Table::\"unknown\"";
-      break;
-    }
-    case MYSQL_AUTHORIZATION_COLUMN_ACCESS: {
-      std::string column_id = makeColumnId(event);
-      resource = "Column::\"" + column_id + "\"";
-      break;
-    }
-    case MYSQL_AUTHORIZATION_ROUTINE_ACCESS: {
-      std::string db = makeDbId(event);
-      std::string routine = event->routine.str ? std::string(event->routine.str) : std::string("unknown");
-      if (!db.empty()) routine = db + "." + routine;
-      resource = "Routine::\"" + routine + "\"";
-      break;
-    }
-    default:
-      resource = "Unknown::\"unknown\"";
-      break;
-  }
-  
-  return resource;
-}
+// Use shared helpers from authorization_common for JSON and mapping
 
 // Check a single privilege with Cedar authorization service
 static int check_single_privilege_cedar(const std::string& user_uid_value,
@@ -342,15 +159,9 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
   }
 
   // Create JSON payload for single privilege
-  Json::Value json_payload;
-  json_payload["principal"] = "User::\"" + user_uid_value + "\"";
-  json_payload["action"] = "Action::\"" + privilege + "\"";
-  json_payload["resource"] = resource_identifier;
-  json_payload["context"]["day"] = day;
-  json_payload["context"]["date"] = date;
-  json_payload["context"]["time"] = fmt_time;
-  json_payload["context"]["ip"]["__extn"]["fn"] = "ip";
-  json_payload["context"]["ip"]["__extn"]["arg"] = client_ip;
+  Json::Value json_payload = auth_common::auth_build_cedar_payload(
+      user_uid_value, resource_identifier, privilege, day, date, fmt_time,
+      client_ip);
 
   Json::StreamWriterBuilder builder;
   std::string json_string = Json::writeString(builder, json_payload);
@@ -450,7 +261,7 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
 }
 
 // Check access using Cedar authorization service
-static int check_access_cedar(const mysql_authorization_event *event) {
+int cedar_check_access_core(const mysql_authorization_event *event) {
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Cedar authorization service called for user: %s@%s, database: %s, table: %s, event: %s",
@@ -458,7 +269,7 @@ static int check_access_cedar(const mysql_authorization_event *event) {
                           event->host.str ? event->host.str : "NULL",
                           event->database.str ? event->database.str : "NULL",
                           event->table.str ? event->table.str : "NULL",
-                          event_type_to_string(event->event_subclass).c_str());
+                          auth_common::auth_event_type_to_string(event->event_subclass).c_str());
   }
 
   if (!plugin_initialized) {
@@ -477,11 +288,11 @@ static int check_access_cedar(const mysql_authorization_event *event) {
     return -1;  // signal IGNORE
   }
 
-  // Build principal UID (user@host)
-  std::string user_uid_value = buildUserUID(event);
+  // Build principal UID (user only)
+  std::string user_uid_value = auth_common::auth_build_user_uid(event);
 
   // Create resource identifier
-  std::string resource_identifier = createResourceIdentifier(event);
+  std::string resource_identifier = auth_common::auth_create_resource_identifier(event);
 
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -490,10 +301,10 @@ static int check_access_cedar(const mysql_authorization_event *event) {
   }
 
   // Get context information
-  std::string day = getDay();
-  auto date = getDate();
-  auto fmt_time = getTime();
-  std::string client_ip = getClientIP(event->thd);
+  std::string day = auth_common::auth_get_day();
+  auto date = auth_common::auth_get_date();
+  auto fmt_time = auth_common::auth_get_time();
+  std::string client_ip = auth_common::auth_get_client_ip(event->thd);
 
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -556,15 +367,20 @@ static int check_access_cedar(const mysql_authorization_event *event) {
   }
 }
 
+// Create resource identifier based on event type (exposed for tests)
+std::string cedar_create_resource_identifier(const mysql_authorization_event *event) {
+  return auth_common::auth_create_resource_identifier(event);
+}
+
 // Main authorization callback function
-static mysql_authorization_result_t cedar_authorization_check(
+mysql_authorization_result_t cedar_check(
     const mysql_authorization_event *event) {
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Cedar authorization callback invoked for user: %s@%s, event: %s",
                           event->user.str ? event->user.str : "NULL",
                           event->host.str ? event->host.str : "NULL", 
-                          event_type_to_string(event->event_subclass).c_str());
+                          auth_common::auth_event_type_to_string(event->event_subclass).c_str());
   }
   
   if (!plugin_initialized) {
@@ -594,7 +410,7 @@ static mysql_authorization_result_t cedar_authorization_check(
   }
 
   // Perform Cedar authorization check
-  int result = check_access_cedar(event);
+  int result = cedar_check_access_core(event);
   
   if (result == -1) {
     if (plugin_handle) {
@@ -619,10 +435,10 @@ static mysql_authorization_result_t cedar_authorization_check(
 
 // Plugin descriptor
 static st_mysql_authorization cedar_authorization_descriptor = {
-    MYSQL_AUTHORIZATION_INTERFACE_VERSION, cedar_authorization_check};
+    MYSQL_AUTHORIZATION_INTERFACE_VERSION, cedar_check};
 
 // Plugin initialization
-static int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
+int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
   // Save plugin handle for logging first
   plugin_handle = plugin_info;
 
@@ -653,7 +469,7 @@ static int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
 }
 
 // Plugin deinitialization
-static int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
+int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Cedar authorization plugin deinitialization starting...");
@@ -715,3 +531,5 @@ mysql_declare_plugin(cedar_authorization){
     nullptr,                                  // config options
     0,                                        // flags
 } mysql_declare_plugin_end;
+
+// No test-specific wrappers; tests include the public header and call directly

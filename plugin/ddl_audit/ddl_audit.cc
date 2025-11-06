@@ -77,6 +77,8 @@
 #include <vector>
 #include <json/value.h>
 
+#include "plugin/ddl_audit/ddl_audit.h"
+
 #include "sql/auth/auth_acls.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
@@ -95,8 +97,6 @@
 #include "sql/table.h"
 
 #include <ctime>
-#include <algorithm>
-#include <cctype>
 using namespace std;
 
 // Plugin system variables
@@ -139,9 +139,9 @@ static int handle_table_access_event(MYSQL_THD thd, const void *event);
 static int handle_stored_program_event(MYSQL_THD thd, const void *event);
 
 // UID helpers (uniform across ddl_audit and cedar_authorization)
-static std::string make_user_uid(const std::string &user, const std::string &host);
-static std::string make_db_uid(const std::string &db);
-static std::string make_table_uid(const std::string &db, const std::string &table);
+std::string make_user_uid(const std::string &user, const std::string &host [[maybe_unused]]);
+std::string make_db_uid(const std::string &db);
+std::string make_table_uid(const std::string &db, const std::string &table);
 
 // Cedar agent /data helpers
 static bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id);
@@ -239,7 +239,7 @@ static SHOW_VAR ddl_audit_status[] = {
 };
 
 // Helper function to check if a command is DDL
-static bool is_ddl_command(int sql_command_id) {
+bool is_ddl_command(int sql_command_id) {
     for (size_t i = 0; i < sizeof(ddl_commands) / sizeof(ddl_commands[0]); i++) {
         if (ddl_commands[i] == sql_command_id) {
             return true;
@@ -249,7 +249,7 @@ static bool is_ddl_command(int sql_command_id) {
 }
 
 // Helper function to get command name from ID
-static const char* get_command_name(int sql_command_id) {
+const char* get_command_name(int sql_command_id) {
     switch (sql_command_id) {
         case SQLCOM_CREATE_TABLE: return "CREATE_TABLE";
         case SQLCOM_ALTER_TABLE: return "ALTER_TABLE";
@@ -325,7 +325,7 @@ static void update_ddl_counters(int sql_command_id) {
 }
 
 // Helper function to extract database name from LEX structure or thread context
-static string extract_database_name_from_lex(MYSQL_THD thd, int sql_command_id) {
+string extract_database_name_from_lex(MYSQL_THD thd, int sql_command_id) {
     if (!thd || !thd->lex) {
         return "";
     }
@@ -350,8 +350,8 @@ static string extract_database_name_from_lex(MYSQL_THD thd, int sql_command_id) 
 }
 
 // Helper function to extract user information from LEX structure
-static void extract_users_from_lex(MYSQL_THD thd, int sql_command_id, 
-                                  vector<pair<string, string>>& users) {
+void extract_users_from_lex(MYSQL_THD thd, int sql_command_id,
+                           vector<pair<string, string>>& users) {
     if (!thd || !thd->lex) {
         return;
     }
@@ -385,8 +385,8 @@ static void extract_users_from_lex(MYSQL_THD thd, int sql_command_id,
 }
 
 // Helper function to extract a table's db/name from LEX (first table)
-static void extract_table_from_lex(MYSQL_THD thd, int sql_command_id,
-                                  string &out_db, string &out_table) {
+void extract_table_from_lex(MYSQL_THD thd, int sql_command_id,
+                           string &out_db, string &out_table) {
     out_db.clear();
     out_table.clear();
     if (!thd || !thd->lex) {
@@ -420,104 +420,9 @@ static void extract_table_from_lex(MYSQL_THD thd, int sql_command_id,
 }
 
 // Helper function to extract table name from query using simple parsing
-static string extract_table_name(const string& query, int sql_command_id) {
-    string upper_query = query;
-    transform(upper_query.begin(), upper_query.end(), upper_query.begin(), ::toupper);
-    
-    size_t pos = string::npos;
-    
-    switch (sql_command_id) {
-        case SQLCOM_CREATE_TABLE:
-            pos = upper_query.find("CREATE TABLE");
-            if (pos != string::npos) {
-                pos = upper_query.find("TABLE", pos) + 5;
-                // Skip "IF NOT EXISTS" if present
-                size_t if_pos = upper_query.find("IF NOT EXISTS", pos);
-                if (if_pos == pos + 1) {
-                    pos = upper_query.find("EXISTS", if_pos) + 6;
-                }
-            }
-            break;
-            
-        case SQLCOM_ALTER_TABLE:
-            pos = upper_query.find("ALTER TABLE");
-            if (pos != string::npos) {
-                pos = upper_query.find("TABLE", pos) + 5;
-            }
-            break;
-            
-        case SQLCOM_DROP_TABLE:
-            pos = upper_query.find("DROP TABLE");
-            if (pos != string::npos) {
-                pos = upper_query.find("TABLE", pos) + 5;
-                // Skip "IF EXISTS" if present
-                size_t if_pos = upper_query.find("IF EXISTS", pos);
-                if (if_pos == pos + 1) {
-                    pos = upper_query.find("EXISTS", if_pos) + 6;
-                }
-            }
-            break;
-            
-        case SQLCOM_RENAME_TABLE:
-            pos = upper_query.find("RENAME TABLE");
-            if (pos != string::npos) {
-                pos = upper_query.find("TABLE", pos) + 5;
-            }
-            break;
-            
-        case SQLCOM_CREATE_INDEX:
-        case SQLCOM_DROP_INDEX:
-            pos = upper_query.find(" ON ");
-            if (pos != string::npos) {
-                pos += 4; // Skip " ON "
-            }
-            break;
-            
-        default:
-            return "";
-    }
-    
-    if (pos == string::npos) {
-        return "";
-    }
-    
-    // Skip whitespace
-    while (pos < query.length() && isspace(query[pos])) {
-        pos++;
-    }
-    
-    if (pos >= query.length()) {
-        return "";
-    }
-    
-    // Extract table name (handle quoted names)
-    size_t start = pos;
-    size_t end = pos;
-    
-    if (query[pos] == '`') {
-        // Quoted table name
-        start = pos + 1;
-        end = query.find('`', start);
-        if (end == string::npos) {
-            return "";
-        }
-    } else {
-        // Unquoted table name - find end of identifier
-        while (end < query.length() && 
-               (isalnum(query[end]) || query[end] == '_' || query[end] == '.')) {
-            end++;
-        }
-    }
-    
-    if (end > start) {
-        return query.substr(start, end - start);
-    }
-    
-    return "";
-}
 
 // Helper function to get current timestamp
-static string get_current_timestamp() {
+string get_current_timestamp() {
     time_t now = time(0);
     char buffer[100];
     strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
@@ -525,7 +430,7 @@ static string get_current_timestamp() {
 }
 
 // Helper function to get client IP address
-static string get_client_ip(MYSQL_THD thd) {
+string get_client_ip(MYSQL_THD thd) {
     if (!thd || !thd->get_protocol_classic()) {
         return "unknown";
     }
@@ -556,24 +461,24 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb, string* s
 }
 
 // UID helpers (definitions)
-static std::string make_user_uid(const std::string &user, const std::string &host) {
+std::string make_user_uid(const std::string &user, const std::string &host [[maybe_unused]]) {
     // For DDL audit plugin, we don't include host information in entity UIDs
     // Host information is available in authorization context via cedar_authorization plugin
     return user;
 }
 
-static std::string make_db_uid(const std::string &db) {
+std::string make_db_uid(const std::string &db) {
     return db;
 }
 
-static std::string make_table_uid(const std::string &db, const std::string &table) {
+std::string make_table_uid(const std::string &db, const std::string &table) {
     if (!db.empty() && !table.empty()) return db + "." + table;
     if (!table.empty()) return table;
     return db; // may be empty
 }
 
 // Cedar agent /data helpers implementations
-static bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id) {
+bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id) {
     if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
         if (ddl_audit_plugin) {
             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
@@ -659,7 +564,7 @@ static bool cedar_upsert_entity(const std::string &entity_type, const std::strin
     }
 }
 
-static bool cedar_delete_entity(const std::string &entity_id) {
+bool cedar_delete_entity(const std::string &entity_id) {
     if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
         if (ddl_audit_plugin) {
             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
@@ -733,7 +638,7 @@ static bool cedar_delete_entity(const std::string &entity_id) {
 
 
 // Helper function to create DDL data JSON
-static Json::Value create_ddl_data(MYSQL_THD thd, const string& ddl_type, 
+Json::Value create_ddl_data(MYSQL_THD thd, const string& ddl_type, 
                                   enum_sql_command_t sql_command_id, const string& query,
                                   const string& database, const string& table, 
                                   const string& event_class_name, const string& event_subclass_name,
@@ -779,7 +684,7 @@ static Json::Value create_ddl_data(MYSQL_THD thd, const string& ddl_type,
 }
 
 // Main audit notification function
-static int ddl_audit_notify(MYSQL_THD thd, mysql_event_class_t event_class,
+int ddl_audit_notify(MYSQL_THD thd, mysql_event_class_t event_class,
                            const void *event) {
     // Check if plugin is enabled first
     if (!ddl_audit_enabled || !g_plugin_installed) {
@@ -807,7 +712,7 @@ static int ddl_audit_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 }
 
 // Handle MYSQL_AUDIT_QUERY_CLASS events (our original DDL handling)
-static int handle_query_event(MYSQL_THD thd, const void *event) {
+int handle_query_event(MYSQL_THD thd, const void *event) {
     const struct mysql_event_query *event_query =
         (const struct mysql_event_query *)event;
     
@@ -826,18 +731,11 @@ static int handle_query_event(MYSQL_THD thd, const void *event) {
     update_ddl_counters(event_query->sql_command_id);
     mysql_mutex_unlock(&g_ddl_audit_mutex);
     
-    // Get query string
-    string query(event_query->query.str, event_query->query.length);
-    
     // Extract information from event and context using LEX structure
     string database = extract_database_name_from_lex(thd, event_query->sql_command_id);
     string table;
-    // Prefer LEX for table extraction to handle IF [NOT] EXISTS, quoting, etc.
+    // Use LEX for table extraction to handle IF [NOT] EXISTS, quoting, etc.
     extract_table_from_lex(thd, event_query->sql_command_id, database, table);
-    if (table.empty()) {
-        // Fallback to simple parsing only if LEX did not provide a table name
-        table = extract_table_name(query, event_query->sql_command_id);
-    }
     string command_name = get_command_name(event_query->sql_command_id);
 
     // Keep Cedar agent's /data in sync using uniform UIDs
@@ -936,7 +834,7 @@ static int handle_query_event(MYSQL_THD thd, const void *event) {
 }
 
 // Handle MYSQL_AUDIT_AUTHENTICATION_CLASS events (user operations)
-static int handle_authentication_event(MYSQL_THD thd [[maybe_unused]], const void *event) {
+int handle_authentication_event(MYSQL_THD thd [[maybe_unused]], const void *event) {
     const struct mysql_event_authentication *auth_event =
         (const struct mysql_event_authentication *)event;
     
@@ -1062,7 +960,7 @@ static int handle_authentication_event(MYSQL_THD thd [[maybe_unused]], const voi
 
 
 // Handle MYSQL_AUDIT_TABLE_ACCESS_CLASS events (table operations)
-static int handle_table_access_event(MYSQL_THD thd, const void *event) {
+int handle_table_access_event(MYSQL_THD thd, const void *event) {
     const struct mysql_event_table_access *table_event =
         (const struct mysql_event_table_access *)event;
     
@@ -1122,7 +1020,7 @@ static int handle_table_access_event(MYSQL_THD thd, const void *event) {
 }
 
 // Handle MYSQL_AUDIT_STORED_PROGRAM_CLASS events (procedures/functions)
-static int handle_stored_program_event(MYSQL_THD thd, const void *event) {
+int handle_stored_program_event(MYSQL_THD thd, const void *event) {
     const struct mysql_event_stored_program *prog_event =
         (const struct mysql_event_stored_program *)event;
     
@@ -1158,7 +1056,7 @@ static int handle_stored_program_event(MYSQL_THD thd, const void *event) {
 }
 
 // Plugin initialization
-static int ddl_audit_plugin_init(MYSQL_PLUGIN plugin_info) {
+int ddl_audit_plugin_init(MYSQL_PLUGIN plugin_info) {
     // Save plugin handle for logging first
     ddl_audit_plugin = plugin_info;
     
@@ -1198,7 +1096,7 @@ static int ddl_audit_plugin_init(MYSQL_PLUGIN plugin_info) {
 }
 
 // Plugin deinitialization
-static int ddl_audit_plugin_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
+int ddl_audit_plugin_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
     if (ddl_audit_plugin) {
         my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
                        "DDL Audit Plugin deinitialization starting...");

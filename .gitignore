@@ -36,3 +36,5 @@ extra/protobuf/protobuf-24.4/java/core/bin
 .cache/
 .env
 .idea/
+
+**/Temporary/*

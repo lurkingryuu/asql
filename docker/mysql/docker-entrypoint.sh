@@ -94,49 +94,49 @@ elif [ "$1" = 'init' ]; then
         exit 1
     fi
 
-    # Create authorization plugin test database and users
-    echo "Setting up authorization plugin test environment..."
-
-    mysql --socket=/var/run/mysqld/mysqld.sock -e "
-        -- Create test database
-        CREATE DATABASE IF NOT EXISTS testdb;
-        CREATE DATABASE IF NOT EXISTS otherdb;
-
-        -- Create test tables
-        USE testdb;
-        CREATE TABLE IF NOT EXISTS test_table (
-            id INT PRIMARY KEY,
-            name VARCHAR(50),
-            secret VARCHAR(100)
-        );
-
-        INSERT INTO test_table VALUES
-            (1, 'public_data', 'not_so_secret'),
-            (2, 'more_data', 'also_secret');
-
-        USE otherdb;
-        CREATE TABLE IF NOT EXISTS other_table (
-            id INT PRIMARY KEY,
-            data VARCHAR(100)
-        );
-
-        INSERT INTO other_table VALUES (1, 'other_data');
-
-        -- Create test users
-        CREATE USER IF NOT EXISTS 'testuser'@'%' IDENTIFIED BY 'password';
-        CREATE USER IF NOT EXISTS 'otheruser'@'%' IDENTIFIED BY 'password';
-        CREATE USER IF NOT EXISTS 'normaluser'@'%' IDENTIFIED BY 'password';
-
-        -- Grant minimal privileges to normaluser
-        GRANT SELECT ON testdb.* TO 'normaluser'@'%';
-
-        -- Enable general log for debugging
-        SET GLOBAL general_log = ON;
-        SET GLOBAL general_log_file = '/var/log/mysql/general.log';
-
-        -- Show plugin status
-        SELECT PLUGIN_STATUS FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME LIKE '%authorization%';
-    "
+    # # Create authorization plugin test database and users
+    # echo "Setting up authorization plugin test environment..."
+# 
+    # mysql --socket=/var/run/mysqld/mysqld.sock -e "
+        # -- Create test database
+        # CREATE DATABASE IF NOT EXISTS testdb;
+        # CREATE DATABASE IF NOT EXISTS otherdb;
+# 
+        # -- Create test tables
+        # USE testdb;
+        # CREATE TABLE IF NOT EXISTS test_table (
+            # id INT PRIMARY KEY,
+            # name VARCHAR(50),
+            # secret VARCHAR(100)
+        # );
+# 
+        # INSERT INTO test_table VALUES
+            # (1, 'public_data', 'not_so_secret'),
+            # (2, 'more_data', 'also_secret');
+# 
+        # USE otherdb;
+        # CREATE TABLE IF NOT EXISTS other_table (
+            # id INT PRIMARY KEY,
+            # data VARCHAR(100)
+        # );
+# 
+        # INSERT INTO other_table VALUES (1, 'other_data');
+# 
+        # -- Create test users
+        # CREATE USER IF NOT EXISTS 'testuser'@'%' IDENTIFIED BY 'password';
+        # CREATE USER IF NOT EXISTS 'otheruser'@'%' IDENTIFIED BY 'password';
+        # CREATE USER IF NOT EXISTS 'normaluser'@'%' IDENTIFIED BY 'password';
+# 
+        # -- Grant minimal privileges to normaluser
+        # GRANT SELECT ON testdb.* TO 'normaluser'@'%';
+# 
+        # -- Enable general log for debugging
+        # SET GLOBAL general_log = ON;
+        # SET GLOBAL general_log_file = '/var/log/mysql/general.log';
+# 
+        # -- Show plugin status
+        # SELECT PLUGIN_STATUS FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME LIKE '%authorization%';
+    # "
 
     # Stop MySQL
     kill $MYSQL_PID
@@ -144,17 +144,17 @@ elif [ "$1" = 'init' ]; then
 
     echo "MySQL initialization complete!"
     echo ""
-    echo "Authorization Plugin Test Environment Ready!"
-    echo "=============================================="
-    echo "Test users created:"
-    echo "  testuser/password   - No built-in privileges (for plugin testing)"
-    echo "  otheruser/password  - No built-in privileges (for plugin testing)"
-    echo "  normaluser/password - Has SELECT on testdb (for comparison)"
-    echo ""
-    echo "Test databases:"
-    echo "  testdb  - Test database with sample data"
-    echo "  otherdb - Additional test database"
-    echo ""
+    # echo "Authorization Plugin Test Environment Ready!"
+    # echo "=============================================="
+    # echo "Test users created:"
+    # echo "  testuser/password   - No built-in privileges (for plugin testing)"
+    # echo "  otheruser/password  - No built-in privileges (for plugin testing)"
+    # echo "  normaluser/password - Has SELECT on testdb (for comparison)"
+    # echo ""
+    # echo "Test databases:"
+    # echo "  testdb  - Test database with sample data"
+    # echo "  otherdb - Additional test database"
+    # echo ""
     echo "To start MySQL: docker-compose up mysql"
     echo "To connect: docker-compose exec mysql mysql -u root"
     echo "To test: docker-compose exec mysql mysql -u testuser -ppassword testdb"

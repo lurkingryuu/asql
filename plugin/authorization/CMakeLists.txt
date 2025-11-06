@@ -56,6 +56,7 @@ endif()
 # Requires curl and jsoncpp libraries
 MYSQL_ADD_PLUGIN(cedar_authorization
   cedar_authorization.cc
+  authorization_common.cc
   MODULE_ONLY
   MODULE_OUTPUT_NAME "cedar_authorization")
 
