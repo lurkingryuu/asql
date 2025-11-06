@@ -4085,9 +4085,19 @@ bool check_grant_column(THD *thd, GRANT_INFO *grant, const char *db_name,
   DBUG_PRINT("enter", ("table: %s  want_privilege: %" PRIu32, table_name,
                        want_privilege));
 
+  // DEBUG: Log entry into check_grant_column
+  // LogEvent().prio(SYSTEM_LEVEL).message(
+  //        "DEBUG: check_grant_column called for column %s.%s.%s, want_privilege=%lu",
+  //        db_name ? db_name : "NULL", table_name ? table_name : "NULL",
+  //        name ? name : "NULL", (unsigned long)want_privilege);
+
   // Adjust wanted privileges based on privileges granted to table:
   want_privilege &= ~grant->privilege;
-  if (!want_privilege) return false;  // Already checked
+  if (!want_privilege) {
+    // LogEvent().prio(SYSTEM_LEVEL).message(
+    //        "DEBUG: check_grant_column: Already checked via table privileges, returning false");
+    return false;  // Already checked
+  }
   Acl_cache_lock_guard acl_cache_lock(thd, Acl_cache_lock_mode::READ_MODE);
   if (!acl_cache_lock.lock()) return true;
 
@@ -4120,13 +4130,52 @@ bool check_grant_column(THD *thd, GRANT_INFO *grant, const char *db_name,
 
     grant_column = column_hash_search(grant_table, name, length);
     if (grant_column && !(~grant_column->rights & want_privilege)) {
+      // LogEvent().prio(SYSTEM_LEVEL).message(
+      //        "DEBUG: check_grant_column: Found column grant, returning false (allowed)");
       return false;
     }
   }
 
 err:
+  // LogEvent().prio(SYSTEM_LEVEL).message(
+  //        "DEBUG: check_grant_column: No column grant found, checking with authorization plugin for %s.%s.%s",
+  //        db_name ? db_name : "NULL", table_name ? table_name : "NULL",
+  //        name ? name : "NULL");
+
+  // Check with authorization plugins before denying access
+  mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
+      thd,
+      MYSQL_AUTHORIZATION_COLUMN_ACCESS,
+      sctx->priv_user().str,
+      sctx->priv_host().str,
+      db_name,
+      table_name,
+      name,
+      nullptr, // routine
+      want_privilege,
+      false,   // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+      want_privilege
+  );
+
+  const char* result_str = (plugin_result == MYSQL_AUTHORIZATION_GRANT) ? "GRANT" :
+                          (plugin_result == MYSQL_AUTHORIZATION_DENY) ? "DENY" : "IGNORE";
+  // LogEvent().prio(SYSTEM_LEVEL).message(
+  //        "DEBUG: check_grant_column: Authorization plugin result: %d (%s) (0=GRANT, 1=DENY, 2=IGNORE)",
+  //        (int)plugin_result, result_str);
+
+  if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
+    // LogEvent().prio(SYSTEM_LEVEL).message(
+    //        "DEBUG: check_grant_column: Plugin granted access, returning false (allowed)");
+    return false;
+  }
+
   char command[128];
   get_privilege_desc(command, sizeof(command), want_privilege);
+  // LogEvent().prio(SYSTEM_LEVEL).message(
+  //        "DEBUG: check_grant_column: Denying access to column %s.%s.%s, command=%s",
+  //        db_name ? db_name : "NULL", table_name ? table_name : "NULL",
+  //        name ? name : "NULL", command);
   my_error(ER_COLUMNACCESS_DENIED_ERROR, MYF(0), command, sctx->priv_user().str,
            sctx->host_or_ip().str, name, table_name);
   return true;
@@ -4168,6 +4217,11 @@ bool check_column_grant_in_table_ref(THD *thd, Table_ref *table_ref,
                                : thd->security_context();
 
   assert(want_privilege);
+
+  // LogEvent().prio(SYSTEM_LEVEL).message(
+  //        "DEBUG: check_column_grant_in_table_ref called for column %s, want_privilege=%lu, table=%s",
+  //        name ? name : "NULL", (unsigned long)want_privilege,
+  //        table_ref->table_name ? table_ref->table_name : "NULL");
 
   if (is_temporary_table(table_ref) || table_ref->is_internal() ||
       table_ref->schema_table) {
@@ -4213,8 +4267,13 @@ bool check_column_grant_in_table_ref(THD *thd, Table_ref *table_ref,
            strcmp(table_name, table_ref->table->s->table_name.str) == 0);
   }
 
-  if (check_grant_column(thd, grant, db_name, table_name, name, length, sctx,
-                         want_privilege))
+  bool result = check_grant_column(thd, grant, db_name, table_name, name, length, sctx,
+                                   want_privilege);
+  // LogEvent().prio(SYSTEM_LEVEL).message(
+  //        "DEBUG: check_column_grant_in_table_ref: check_grant_column returned %d for %s.%s.%s",
+  //        result ? 1 : 0, db_name ? db_name : "NULL", table_name ? table_name : "NULL",
+  //        name ? name : "NULL");
+  if (result)
     return true;
   return false;
 }

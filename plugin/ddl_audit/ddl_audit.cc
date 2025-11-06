@@ -554,10 +554,17 @@ bool cedar_upsert_entity(const std::string &entity_type, const std::string &enti
     if (response_code >= 200 && response_code < 300) {
         number_of_cedar_successes++;
         return true;
+    } else if (response_code == 409) { // Conflict - entity already exists
+        if (ddl_audit_plugin) {
+            my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
+                           "DDL Audit: /data upsert HTTP 409 Conflict, entity '%s' already exists.", entity_id.c_str());
+        }
+        number_of_cedar_successes++; // Treat as success for idempotency
+        return true;
     } else {
         if (ddl_audit_plugin) {
             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-                           "DDL Audit: /data upsert HTTP %ld", response_code);
+                           "DDL Audit: /data upsert HTTP %ld, response: %s", response_code, response.c_str());
         }
         number_of_cedar_failures++;
         return false;
@@ -629,7 +636,7 @@ bool cedar_delete_entity(const std::string &entity_id) {
     } else {
         if (ddl_audit_plugin) {
             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
-                           "DDL Audit: /data delete HTTP %ld", response_code);
+                           "DDL Audit: /data delete HTTP %ld, response: %s", response_code, response.c_str());
         }
         number_of_cedar_failures++;
         return false;

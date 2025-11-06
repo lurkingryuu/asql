@@ -264,11 +264,12 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
 int cedar_check_access_core(const mysql_authorization_event *event) {
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization service called for user: %s@%s, database: %s, table: %s, event: %s",
+                          "Cedar authorization service called for user: %s@%s, database: %s, table: %s, column: %s, event: %s",
                           event->user.str ? event->user.str : "NULL",
                           event->host.str ? event->host.str : "NULL",
                           event->database.str ? event->database.str : "NULL",
                           event->table.str ? event->table.str : "NULL",
+                          event->column.str ? event->column.str : "NULL",
                           auth_common::auth_event_type_to_string(event->event_subclass).c_str());
   }
 
@@ -377,12 +378,16 @@ mysql_authorization_result_t cedar_check(
     const mysql_authorization_event *event) {
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization callback invoked for user: %s@%s, event: %s",
+                          "Cedar authorization callback invoked for user: %s@%s, event: %s, database: %s, table: %s, column: %s, privileges: %lu",
                           event->user.str ? event->user.str : "NULL",
-                          event->host.str ? event->host.str : "NULL", 
-                          auth_common::auth_event_type_to_string(event->event_subclass).c_str());
+                          event->host.str ? event->host.str : "NULL",
+                          auth_common::auth_event_type_to_string(event->event_subclass).c_str(),
+                          event->database.str ? event->database.str : "NULL",
+                          event->table.str ? event->table.str : "NULL",
+                          event->column.str ? event->column.str : "NULL",
+                          (unsigned long)event->privileges);
   }
-  
+
   if (!plugin_initialized) {
     if (plugin_handle) {
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
@@ -399,7 +404,7 @@ mysql_authorization_result_t cedar_check(
     }
     return MYSQL_AUTHORIZATION_GRANT;
   }
-  
+
   // Handle zero-privilege checks by allowing them (these are also internal checks)
   if (event->privileges == 0) {
     if (plugin_handle) {
@@ -409,9 +414,21 @@ mysql_authorization_result_t cedar_check(
     return MYSQL_AUTHORIZATION_GRANT;
   }
 
-  // Perform Cedar authorization check
+  // Check if this is a supported event type
+  if (event->event_subclass != MYSQL_AUTHORIZATION_DB_ACCESS &&
+      event->event_subclass != MYSQL_AUTHORIZATION_TABLE_ACCESS &&
+      event->event_subclass != MYSQL_AUTHORIZATION_COLUMN_ACCESS &&
+      event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS) {
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Cedar authorization: unsupported event type %s, returning IGNORE",
+                            auth_common::auth_event_type_to_string(event->event_subclass).c_str());
+    }
+    return MYSQL_AUTHORIZATION_IGNORE;
+  }
+
   int result = cedar_check_access_core(event);
-  
+
   if (result == -1) {
     if (plugin_handle) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
