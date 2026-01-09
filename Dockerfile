@@ -198,7 +198,7 @@ fi\n\
 \n\
 # Start MySQL server\n\
 # Use any additional command line arguments passed to the container\n\
-exec mysqld --user=mysql --datadir=$MYSQL_DATADIR \"$@\"\n\
+exec mysqld --user=mysql --datadir=$MYSQL_DATADIR "$@"\n\
 ' > /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
 
 ENV MYSQL_DATADIR=/var/lib/mysql
