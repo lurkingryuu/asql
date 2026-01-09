@@ -4,17 +4,23 @@ set -e
 # Multi-Architecture Docker Build Script with Resource Limits
 #
 # Usage examples:
+#   # Build for both amd64 and arm64 (default)
+#   ./build-and-push.sh
+#
+#   # Build only for amd64
+#   ./build-and-push.sh --amd64-only
+#
 #   # Use only 4 CPUs
-#   MAX_CPUS=4 ./build/docker-buildx.sh
+#   MAX_CPUS=4 ./build-and-push.sh
 #
 #   # Use 50% of available CPUs (6 CPUs on a 12-core machine)
-#   MAX_CPU_PERCENT=50 ./build/docker-buildx.sh
+#   MAX_CPU_PERCENT=50 ./build-and-push.sh
 #
 #   # Limit memory to 8GB
-#   MEMORY_LIMIT=8g ./build/docker-buildx.sh
+#   MEMORY_LIMIT=8g ./build-and-push.sh
 #
 #   # Combine limits
-#   MAX_CPUS=4 MEMORY_LIMIT=8g ./build/docker-buildx.sh
+#   MAX_CPUS=4 MEMORY_LIMIT=8g ./build-and-push.sh --amd64-only
 
 # Configuration
 DOCKER_USERNAME="${DOCKER_USERNAME:-lurkingryuu}"
@@ -59,7 +65,13 @@ TAG_SUFFIX="${TAG_SUFFIX:-.authorization.plugin}"
 FULL_VERSION_TAG="v${VERSION}${TAG_SUFFIX}"
 
 # Platforms to build for
-PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
+# Check for --amd64-only flag
+if [ "$1" = "--amd64-only" ]; then
+    PLATFORMS="linux/amd64"
+    shift
+else
+    PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
+fi
 
 # Full image name
 FULL_IMAGE_NAME="${DOCKER_USERNAME}/${IMAGE_NAME}"

@@ -139,15 +139,21 @@ if [ ! -d "$MYSQL_DATADIR/mysql" ]; then\n\
     if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
         if [ "$INIT_WITH_PASSWORD" -eq 1 ]; then\n\
             # Get temporary root password from error log\n\
-            TEMP_PASSWORD=$(grep "temporary password" $MYSQL_DATADIR/*.log 2>/dev/null | awk '\''{print $NF}'\'' | tail -1)\n\
+            TEMP_PASSWORD=$(grep "temporary password" $MYSQL_DATADIR/*.log $MYSQL_DATADIR/*.err 2>/dev/null | awk '\''{print $NF}'\'' | tail -1)\n\
+            echo "Found temporary password: ${TEMP_PASSWORD:0:5}..."\n\
             if [ -n "$TEMP_PASSWORD" ]; then\n\
-                mysql -uroot -p"$TEMP_PASSWORD" --connect-expired-password -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || true\n\
+                echo "Changing root@localhost password..."\n\
+                mysql -uroot -p"$TEMP_PASSWORD" --connect-expired-password -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || echo "Failed to change root@localhost password"\n\
+                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null || echo "Failed to flush privileges"\n\
+                sleep 2\n\
             fi\n\
         else\n\
             mysql -uroot -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || true\n\
         fi\n\
-        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '\''root'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || true\n\
-        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON *.* TO '\''root'\''@'\''%'\'' WITH GRANT OPTION;" 2>/dev/null || true\n\
+        echo "Creating root@'\''%'\'' user..."\n\
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '\''root'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || echo "Failed to create root@'\''%'\'' user"\n\
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON *.* TO '\''root'\''@'\''%'\'' WITH GRANT OPTION;" 2>/dev/null || echo "Failed to grant privileges to root@'\''%'\''"\n\
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null || echo "Failed to flush privileges"\n\
     fi\n\
     \n\
     # Create database if specified\n\
