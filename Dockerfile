@@ -137,23 +137,35 @@ if [ ! -d "$MYSQL_DATADIR/mysql" ]; then\n\
     \n\
     # Set root password if provided\n\
     if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+            # For MySQL 8.0, we need to handle the temporary password more carefully\n\
         if [ "$INIT_WITH_PASSWORD" -eq 1 ]; then\n\
-            # Get temporary root password from error log\n\
-            TEMP_PASSWORD=$(grep "temporary password" $MYSQL_DATADIR/*.log $MYSQL_DATADIR/*.err 2>/dev/null | awk '\''{print $NF}'\'' | tail -1)\n\
-            echo "Found temporary password: ${TEMP_PASSWORD:0:5}..."\n\
-            if [ -n "$TEMP_PASSWORD" ]; then\n\
-                echo "Changing root@localhost password..."\n\
-                mysql -uroot -p"$TEMP_PASSWORD" --connect-expired-password -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || echo "Failed to change root@localhost password"\n\
-                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null || echo "Failed to flush privileges"\n\
-                sleep 2\n\
+            echo "MySQL 8.0 initialization with temporary password..."\n\
+            # Use a more robust approach - try the temporary password from logs\n\
+            TEMP_PASSWORD_FILE="/tmp/mysql_temp_pass.txt"\n\
+            grep "temporary password" $MYSQL_DATADIR/*.log $MYSQL_DATADIR/*.err 2>/dev/null | awk '\''{print $NF}'\'' | tail -1 > "$TEMP_PASSWORD_FILE" 2>/dev/null || echo "" > "$TEMP_PASSWORD_FILE"\n\
+            TEMP_PASSWORD=$(cat "$TEMP_PASSWORD_FILE" 2>/dev/null || echo "")\n\
+            \n\
+            if [ -n "$TEMP_PASSWORD" ] && [ ${#TEMP_PASSWORD} -gt 5 ]; then\n\
+                echo "Found temporary password, attempting to change..."\n\
+                # Escape the password for the mysql command\n\
+                ESCAPED_TEMP_PASS=$(printf '\''%q'\'' "$TEMP_PASSWORD")\n\
+                mysql --defaults-file=<(echo -e "[client]\npassword=$TEMP_PASSWORD\nconnect-expired-password") -uroot -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null && \\\n\
+                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null && \\\n\
+                echo "✓ Successfully changed root@localhost password"\n\
+            else\n\
+                echo "No temporary password found, trying without password..."\n\
+                mysql -uroot -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null && \\\n\
+                echo "✓ Successfully set root@localhost password"\n\
             fi\n\
-        else\n\
-            mysql -uroot -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || true\n\
         fi\n\
+        \n\
+        # Create root@'\''%'\'' user\n\
         echo "Creating root@'\''%'\'' user..."\n\
-        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '\''root'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || echo "Failed to create root@'\''%'\'' user"\n\
-        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON *.* TO '\''root'\''@'\''%'\'' WITH GRANT OPTION;" 2>/dev/null || echo "Failed to grant privileges to root@'\''%'\''"\n\
-        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null || echo "Failed to flush privileges"\n\
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '\''root'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null && \\\n\
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON *.* TO '\''root'\''@'\''%'\'' WITH GRANT OPTION;" 2>/dev/null && \\\n\
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null && \\\n\
+        echo "✓ Successfully created root@'\''%'\'' user" || \\\n\
+        echo "✗ Failed to create root@'\''%'\'' user"\n\
     fi\n\
     \n\
     # Create database if specified\n\
