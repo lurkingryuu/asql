@@ -1,15 +1,22 @@
 # Git repository files
 .git/
 .gitignore
+.github/
 
 # Build artifacts and directories
 build/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
 
 # IDE and editor files
 .vscode/
+.idea/
 .cproject
 .project
 .settings/
@@ -26,22 +33,72 @@ CMakeFiles/
 __pycache__/
 *.tmp
 *.log
+*.pid
+*.sock
+*.sock.lock
 
 # Source downloads and external dependencies
 source_downloads/
 
-# Test and packaging directories are required by CMake
-# (Do not exclude them from the build context)
-# mysql-test/
-# packaging/
+# Test directories - exclude large test result files but keep structure
+mysql-test/**/*.result
+mysql-test/**/*.reject
+mysql-test/**/*.diff
+mysql-test/**/*.log
+mysql-test/var/
+mysql-test/r/
+mysql-test/rpms/
+Testing/
+unittest/gunit/
+
+# Compiled binaries in extra/ directories
+extra/**/bin/
+extra/**/*.jar
+extra/**/*.class
+extra/**/target/
+extra/**/build/
+extra/**/cmake-build-*/
+extra/**/CMakeCache.txt
+extra/**/CMakeFiles/
+extra/protobuf/**/java/core/bin/
+extra/protobuf/**/java/util/bin/
+extra/protobuf/**/java/lite/bin/
+extra/protobuf/**/csharp/bin/
+extra/protobuf/**/python/build/
+extra/protobuf/**/python/dist/
+extra/protobuf/**/python/*.egg-info/
+
+# Documentation (not needed for build)
+Docs/
+*.md
+!README
+!INSTALL
+
+# Packaging - keep structure but exclude build artifacts
+packaging/**/*.rpm
+packaging/**/*.deb
+packaging/**/BUILD/
+packaging/**/RPMS/
+packaging/**/SRPMS/
+packaging/**/SOURCES/
+
+# Docker files (keep docker/ in context)
+# docker/
+Dockerfile
+docker-compose.yml
+build-and-push.sh
+DOCKER_BUILD.md
+DOCKER-QUICKSTART.md
 
 # Emacs backup files
 *~
 
 # Secrets
 .env
+*.pem
+*.key
 
-# Docker files (keep docker/ in context)
-# docker/
-Dockerfile
-docker-compose.yml
+# Scripts that aren't needed in the image
+*.sh
+!docker/**/*.sh
+!scripts/**/*.sh

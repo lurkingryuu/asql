@@ -2,6 +2,10 @@ FROM ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Build argument for parallel jobs (defaults to all available CPUs)
+# If not provided, will use nproc in the RUN command
+ARG PARALLEL_JOBS
+
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -36,16 +40,23 @@ WORKDIR /mysql-build
 RUN cmake /mysql-source \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr/local/mysql \
+    -DCMAKE_C_FLAGS="-O3 -march=native -mtune=native" \
+    -DCMAKE_CXX_FLAGS="-O3 -march=native -mtune=native" \
     -DDOWNLOAD_BOOST=1 \
     -DWITH_BOOST=/tmp/boost \
     -DWITH_UNIT_TESTS=OFF \
+    -DWITH_DEBUG=OFF \
     -DENABLED_LOCAL_INFILE=1 \
     -DMYSQL_DATADIR=/var/lib/mysql \
     -DSYSCONFDIR=/etc/mysql \
     -DWITH_SSL=system \
     -G Ninja
 
-RUN ninja -j$(nproc) && ninja install
+RUN if [ -n "${PARALLEL_JOBS}" ]; then \
+        ninja -j${PARALLEL_JOBS} && ninja install; \
+    else \
+        ninja -j$(nproc) && ninja install; \
+    fi
 
 FROM ubuntu:22.04
 
@@ -60,7 +71,14 @@ RUN apt-get update && apt-get install -y \
     libldap-2.5-0 \
     libkrb5-3 \
     libedit2 \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    libcurl4-openssl-dev \
+    libjsoncpp-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && ldconfig \
+    && echo "Verifying required libraries are available:" \
+    && ldconfig -p | grep -q libcurl.so.4 && echo "✓ libcurl.so.4 found" \
+    && ldconfig -p | grep -q libjsoncpp && echo "✓ libjsoncpp found"
 
 RUN groupadd -r mysql && useradd -r -g mysql mysql
 
@@ -76,11 +94,99 @@ EXPOSE 3306
 # Create entrypoint script for database initialization
 RUN echo '#!/bin/bash\n\
 set -e\n\
+\n\
+# Initialize database if data directory is empty\n\
 if [ ! -d "$MYSQL_DATADIR/mysql" ]; then\n\
     echo "Initializing MySQL database..."\n\
-    mysqld --initialize-insecure --user=mysql --datadir=$MYSQL_DATADIR\n\
+    \n\
+    # Determine initialization method based on root password\n\
+    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+        echo "Initializing with root password..."\n\
+        mysqld --initialize --user=mysql --datadir=$MYSQL_DATADIR\n\
+        INIT_WITH_PASSWORD=1\n\
+    else\n\
+        echo "Initializing without root password (insecure)..."\n\
+        mysqld --initialize-insecure --user=mysql --datadir=$MYSQL_DATADIR\n\
+        INIT_WITH_PASSWORD=0\n\
+    fi\n\
+    \n\
     chown -R mysql:mysql $MYSQL_DATADIR\n\
+    \n\
+    # Start MySQL temporarily to set root password and create database/user\n\
+    echo "Starting MySQL for initial setup..."\n\
+    mysqld --user=mysql --datadir=$MYSQL_DATADIR --skip-networking &\n\
+    MYSQL_PID=$!\n\
+    \n\
+    # Wait for MySQL to be ready\n\
+    for i in {30..0}; do\n\
+        if mysqladmin ping --silent; then\n\
+            break\n\
+        fi\n\
+        echo "Waiting for MySQL to start... ($i)"\n\
+        sleep 1\n\
+    done\n\
+    \n\
+    if [ $i -eq 0 ]; then\n\
+        echo "MySQL failed to start" >&2\n\
+        exit 1\n\
+    fi\n\
+    \n\
+    # Set root password if provided\n\
+    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+        if [ "$INIT_WITH_PASSWORD" -eq 1 ]; then\n\
+            # Get temporary root password from error log\n\
+            TEMP_PASSWORD=$(grep "temporary password" $MYSQL_DATADIR/*.log 2>/dev/null | awk '\''{print $NF}'\'' | tail -1)\n\
+            if [ -n "$TEMP_PASSWORD" ]; then\n\
+                mysql -uroot -p"$TEMP_PASSWORD" --connect-expired-password -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || true\n\
+            fi\n\
+        else\n\
+            mysql -uroot -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || true\n\
+        fi\n\
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '\''root'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';" 2>/dev/null || true\n\
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON *.* TO '\''root'\''@'\''%'\'' WITH GRANT OPTION;" 2>/dev/null || true\n\
+    fi\n\
+    \n\
+    # Create database if specified\n\
+    if [ -n "$MYSQL_DATABASE" ]; then\n\
+        echo "Creating database: $MYSQL_DATABASE"\n\
+        if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\`;" 2>/dev/null || true\n\
+        else\n\
+            mysql -uroot -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\`;" 2>/dev/null || true\n\
+        fi\n\
+    fi\n\
+    \n\
+    # Create user if specified\n\
+    if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASSWORD" ]; then\n\
+        echo "Creating user: $MYSQL_USER"\n\
+        if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '\''$MYSQL_USER'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';" 2>/dev/null || true\n\
+            if [ -n "$MYSQL_DATABASE" ]; then\n\
+                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON \`$MYSQL_DATABASE\`.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true\n\
+            else\n\
+                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON *.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true\n\
+            fi\n\
+            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null || true\n\
+        else\n\
+            mysql -uroot -e "CREATE USER IF NOT EXISTS '\''$MYSQL_USER'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';" 2>/dev/null || true\n\
+            if [ -n "$MYSQL_DATABASE" ]; then\n\
+                mysql -uroot -e "GRANT ALL PRIVILEGES ON \`$MYSQL_DATABASE\`.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true\n\
+            else\n\
+                mysql -uroot -e "GRANT ALL PRIVILEGES ON *.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true\n\
+            fi\n\
+            mysql -uroot -e "FLUSH PRIVILEGES;" 2>/dev/null || true\n\
+        fi\n\
+    fi\n\
+    \n\
+    # Stop temporary MySQL instance\n\
+    echo "Stopping temporary MySQL instance..."\n\
+    kill $MYSQL_PID 2>/dev/null || true\n\
+    wait $MYSQL_PID 2>/dev/null || true\n\
+    \n\
+    echo "Initialization complete!"\n\
 fi\n\
+\n\
+# Start MySQL server\n\
 exec mysqld --user=mysql --datadir=$MYSQL_DATADIR\n\
 ' > /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
 

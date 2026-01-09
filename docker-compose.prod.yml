@@ -1,0 +1,117 @@
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:-lurkingryuu/mysql:latest}
+    container_name: mysql-server-prod
+    restart: unless-stopped
+    
+    # Security: Run as non-root user (mysql user is created in Dockerfile)
+    user: mysql
+    
+    # Resource limits for production
+    deploy:
+      resources:
+        limits:
+          cpus: '${MYSQL_CPU_LIMIT:-4.0}'
+          memory: ${MYSQL_MEMORY_LIMIT:-4G}
+        reservations:
+          cpus: '${MYSQL_CPU_RESERVATION:-2.0}'
+          memory: ${MYSQL_MEMORY_RESERVATION:-2G}
+    
+    # Network configuration
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    
+    # Volumes for data persistence
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - mysql_logs:/var/log/mysql
+      - mysql_config:/etc/mysql/conf.d
+      # Optional: Mount custom my.cnf if needed
+      # - ./mysql-config/my.cnf:/etc/mysql/my.cnf:ro
+    
+    # Environment variables
+    environment:
+      - MYSQL_DATADIR=/var/lib/mysql
+      # Set root password via environment (use secrets in production)
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-}
+      # Optional: Create initial database and user
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-}
+      - MYSQL_USER=${MYSQL_USER:-}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-}
+      # Performance tuning
+      - MYSQL_INNODB_BUFFER_POOL_SIZE=${MYSQL_INNODB_BUFFER_POOL_SIZE:-1G}
+      - MYSQL_MAX_CONNECTIONS=${MYSQL_MAX_CONNECTIONS:-200}
+    
+    # Health check (works with or without password)
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "production,mysql"
+    
+    # Labels for production
+    labels:
+      - "com.mysql.version=8.0.43"
+      - "com.mysql.environment=production"
+      - "com.mysql.managed-by=docker-compose"
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Read-only root filesystem (except data directories)
+    read_only: false  # Set to true if you mount /tmp, /var/run as tmpfs
+    
+    # Capabilities
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    
+    # Network
+    networks:
+      - mysql_network
+
+volumes:
+  mysql_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MYSQL_DATA_PATH:-./data/mysql}
+    labels:
+      - "com.mysql.volume=data"
+  mysql_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MYSQL_LOGS_PATH:-./data/logs}
+    labels:
+      - "com.mysql.volume=logs"
+  mysql_config:
+    driver: local
+    labels:
+      - "com.mysql.volume=config"
+
+networks:
+  mysql_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+    labels:
+      - "com.mysql.network=production"
