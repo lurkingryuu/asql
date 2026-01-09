@@ -37,12 +37,16 @@ COPY . .
 RUN mkdir -p /tmp/boost /mysql-build
 WORKDIR /mysql-build
 
+# Pre-download Boost to avoid timeout issues during cmake
+RUN wget -q -O /tmp/boost.tar.bz2 https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2 && \
+    tar -xjf /tmp/boost.tar.bz2 -C /tmp/boost --strip-components=1
+
 RUN cmake /mysql-source \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr/local/mysql \
     -DCMAKE_C_FLAGS="-O3 -march=native -mtune=native" \
     -DCMAKE_CXX_FLAGS="-O3 -march=native -mtune=native" \
-    -DDOWNLOAD_BOOST=1 \
+    -DDOWNLOAD_BOOST=0 \
     -DWITH_BOOST=/tmp/boost \
     -DWITH_UNIT_TESTS=OFF \
     -DWITH_DEBUG=OFF \
