@@ -128,7 +128,9 @@ jobs:
               title: 'Docker build failed',
               body: `Docker build failed for ${context.sha}\n\nCheck the [workflow run](${context.payload.repository.html_url}/actions/runs/${context.runId}) for details.`,
               labels: ['bug', 'docker']
-            })      - name: Notify on success
+            })
+
+      - name: Notify on success
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/github-script@v7
         with:
