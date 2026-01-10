@@ -97,5 +97,5 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Image digest
-        run: echo "Image pushed with digest: ${{ steps.meta.outputs.digest }}"
+        run: echo "Image pushed with digest: ${{ steps.build-and-push.outputs.digest }}"
 
