@@ -96,113 +96,113 @@ ENV PATH=$PATH:/usr/local/mysql/bin
 EXPOSE 3306
 
 # Create entrypoint script for database initialization
-RUN echo '#!/bin/bash
-set -e
-
-# Initialize database if data directory is empty
-if [ ! -d "$MYSQL_DATADIR/mysql" ]; then
-    echo "Initializing MySQL database..."
-    
-    # Determine initialization method based on root password
-    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-        echo "Initializing with root password..."
-        mysqld --initialize --user=mysql --datadir=$MYSQL_DATADIR
-        INIT_WITH_PASSWORD=1
-    else
-        echo "Initializing without root password (insecure)..."
-        mysqld --initialize-insecure --user=mysql --datadir=$MYSQL_DATADIR
-        INIT_WITH_PASSWORD=0
-    fi
-    
-    chown -R mysql:mysql $MYSQL_DATADIR
-    
-    # Start MySQL temporarily to set root password and create database/user
-    echo "Starting MySQL for initial setup..."
-    mysqld --user=mysql --datadir=$MYSQL_DATADIR --skip-networking &
-    MYSQL_PID=$!
-    
-    # Wait for MySQL to be ready
-    for i in {30..0}; do
-        if mysqladmin ping --silent; then
-            break
-        fi
-        echo "Waiting for MySQL to start... ($i)"
-        sleep 1
-    done
-    
-    if [ $i -eq 0 ]; then
-        echo "MySQL failed to start" >&2
-        exit 1
-    fi
-    
-    # Set root password if provided
-    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-        if [ "$INIT_WITH_PASSWORD" -eq 1 ]; then
-            echo "MySQL 8.0 initialization: fixing authentication..."
-            
-            # Extract temporary password reliably
-            TEMP_PASS=$(grep -h "temporary password" $MYSQL_DATADIR/*.log $MYSQL_DATADIR/*.err 2>/dev/null | sed -n '\''s/.*root@localhost: //p'\'' | tail -1)
-            
-            if [ -n "$TEMP_PASS" ]; then
-                echo "Applying fix with temporary password..."
-                # Use the method that worked: FLUSH PRIVILEGES first, then ALTER
-                # We use MYSQL_PWD to avoid shell injection issues with special characters
-                MYSQL_PWD="$TEMP_PASS" mysql --connect-expired-password -uroot <<EOF
-FLUSH PRIVILEGES;
-ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';
-CREATE USER IF NOT EXISTS '\''root'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';
-GRANT ALL PRIVILEGES ON *.* TO '\''root'\''@'\''%'\'' WITH GRANT OPTION;
-FLUSH PRIVILEGES;
-EOF
-                echo "✓ Authentication fixed successfully"
-            fi
-        fi
-        echo "Authentication setup complete"
-    fi
-    
-    # Create database if specified
-    if [ -n "$MYSQL_DATABASE" ]; then
-        echo "Creating database: $MYSQL_DATABASE"
-        if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\`;" 2>/dev/null || true
-        else
-            mysql -uroot -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\`;" 2>/dev/null || true
-        fi
-    fi
-    
-    # Create user if specified
-    if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASSWORD" ]; then
-        echo "Creating user: $MYSQL_USER"
-        if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '\''$MYSQL_USER'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';" 2>/dev/null || true
-            if [ -n "$MYSQL_DATABASE" ]; then
-                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON \`$MYSQL_DATABASE\`.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true
-            else
-                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON *.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true
-            fi
-            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null || true
-        else
-            mysql -uroot -e "CREATE USER IF NOT EXISTS '\''$MYSQL_USER'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';" 2>/dev/null || true
-            if [ -n "$MYSQL_DATABASE" ]; then
-                mysql -uroot -e "GRANT ALL PRIVILEGES ON \`$MYSQL_DATABASE\`.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true
-            else
-                mysql -uroot -e "GRANT ALL PRIVILEGES ON *.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true
-            fi
-            mysql -uroot -e "FLUSH PRIVILEGES;" 2>/dev/null || true
-        fi
-    fi
-    
-    # Stop temporary MySQL instance
-    echo "Stopping temporary MySQL instance..."
-    kill $MYSQL_PID 2>/dev/null || true
-    wait $MYSQL_PID 2>/dev/null || true
-    
-    echo "Initialization complete!"
-fi
-
-# Start MySQL server
-# Use any additional command line arguments passed to the container
-exec mysqld --user=mysql --datadir=$MYSQL_DATADIR "$@"
+RUN printf '#!/bin/bash\n\
+set -e\n\
+\n\
+# Initialize database if data directory is empty\n\
+if [ ! -d "$MYSQL_DATADIR/mysql" ]; then\n\
+    echo "Initializing MySQL database..."\n\
+    \n\
+    # Determine initialization method based on root password\n\
+    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+        echo "Initializing with root password..."\n\
+        mysqld --initialize --user=mysql --datadir=$MYSQL_DATADIR\n\
+        INIT_WITH_PASSWORD=1\n\
+    else\n\
+        echo "Initializing without root password (insecure)..."\n\
+        mysqld --initialize-insecure --user=mysql --datadir=$MYSQL_DATADIR\n\
+        INIT_WITH_PASSWORD=0\n\
+    fi\n\
+    \n\
+    chown -R mysql:mysql $MYSQL_DATADIR\n\
+    \n\
+    # Start MySQL temporarily to set root password and create database/user\n\
+    echo "Starting MySQL for initial setup..."\n\
+    mysqld --user=mysql --datadir=$MYSQL_DATADIR --skip-networking &\n\
+    MYSQL_PID=$!\n\
+    \n\
+    # Wait for MySQL to be ready\n\
+    for i in {30..0}; do\n\
+        if mysqladmin ping --silent; then\n\
+            break\n\
+        fi\n\
+        echo "Waiting for MySQL to start... ($i)"\n\
+        sleep 1\n\
+    done\n\
+    \n\
+    if [ $i -eq 0 ]; then\n\
+        echo "MySQL failed to start" >&2\n\
+        exit 1\n\
+    fi\n\
+    \n\
+    # Set root password if provided\n\
+    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+        if [ "$INIT_WITH_PASSWORD" -eq 1 ]; then\n\
+            echo "MySQL 8.0 initialization: fixing authentication..."\n\
+            \n\
+            # Extract temporary password reliably\n\
+            TEMP_PASS=$(grep -h "temporary password" $MYSQL_DATADIR/*.log $MYSQL_DATADIR/*.err 2>/dev/null | sed -n '\''s/.*root@localhost: //p'\'' | tail -1)\n\
+            \n\
+            if [ -n "$TEMP_PASS" ]; then\n\
+                echo "Applying fix with temporary password..."\n\
+                # Use the method that worked: FLUSH PRIVILEGES first, then ALTER\n\
+                # We use MYSQL_PWD to avoid shell injection issues with special characters\n\
+                MYSQL_PWD="$TEMP_PASS" mysql --connect-expired-password -uroot <<EOF\n\
+FLUSH PRIVILEGES;\n\
+ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';\n\
+CREATE USER IF NOT EXISTS '\''root'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_ROOT_PASSWORD'\'';\n\
+GRANT ALL PRIVILEGES ON *.* TO '\''root'\''@'\''%'\'' WITH GRANT OPTION;\n\
+FLUSH PRIVILEGES;\n\
+EOF\n\
+                echo "✓ Authentication fixed successfully"\n\
+            fi\n\
+        fi\n\
+        echo "Authentication setup complete"\n\
+    fi\n\
+    \n\
+    # Create database if specified\n\
+    if [ -n "$MYSQL_DATABASE" ]; then\n\
+        echo "Creating database: $MYSQL_DATABASE"\n\
+        if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\`;" 2>/dev/null || true\n\
+        else\n\
+            mysql -uroot -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\`;" 2>/dev/null || true\n\
+        fi\n\
+    fi\n\
+    \n\
+    # Create user if specified\n\
+    if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASSWORD" ]; then\n\
+        echo "Creating user: $MYSQL_USER"\n\
+        if [ -n "$MYSQL_ROOT_PASSWORD" ]; then\n\
+            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS '\''$MYSQL_USER'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';" 2>/dev/null || true\n\
+            if [ -n "$MYSQL_DATABASE" ]; then\n\
+                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON \`$MYSQL_DATABASE\`.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true\n\
+            else\n\
+                mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT ALL PRIVILEGES ON *.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true\n\
+            fi\n\
+            mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH PRIVILEGES;" 2>/dev/null || true\n\
+        else\n\
+            mysql -uroot -e "CREATE USER IF NOT EXISTS '\''$MYSQL_USER'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';" 2>/dev/null || true\n\
+            if [ -n "$MYSQL_DATABASE" ]; then\n\
+                mysql -uroot -e "GRANT ALL PRIVILEGES ON \`$MYSQL_DATABASE\`.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true\n\
+            else\n\
+                mysql -uroot -e "GRANT ALL PRIVILEGES ON *.* TO '\''$MYSQL_USER'\''@'\''%'\'';" 2>/dev/null || true\n\
+            fi\n\
+            mysql -uroot -e "FLUSH PRIVILEGES;" 2>/dev/null || true\n\
+        fi\n\
+    fi\n\
+    \n\
+    # Stop temporary MySQL instance\n\
+    echo "Stopping temporary MySQL instance..."\n\
+    kill $MYSQL_PID 2>/dev/null || true\n\
+    wait $MYSQL_PID 2>/dev/null || true\n\
+    \n\
+    echo "Initialization complete!"\n\
+fi\n\
+\n\
+# Start MySQL server\n\
+# Use any additional command line arguments passed to the container\n\
+exec mysqld --user=mysql --datadir=$MYSQL_DATADIR "$@"\n\
 ' > /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
 
 ENV MYSQL_DATADIR=/var/lib/mysql
