@@ -3,14 +3,12 @@ name: Build and Push Docker Image
 on:
   push:
     branches:
-      - main
-      - master
+      - fresh_start
     tags:
       - 'v*'
   pull_request:
     branches:
-      - main
-      - master
+      - fresh_start
   workflow_dispatch:
     inputs:
       platforms:
