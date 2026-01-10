@@ -102,3 +102,4 @@ DOCKER-QUICKSTART.md
 *.sh
 !docker/**/*.sh
 !scripts/**/*.sh
+!docker-entrypoint.sh
