@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -32,7 +33,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /mysql-source
-COPY . .
+# This prevent docker-entrypoint.sh changes from breaking this layer's cache.
+COPY --exclude=docker-entrypoint.sh . .
 
 RUN mkdir -p /tmp/boost /mysql-build
 WORKDIR /mysql-build
@@ -95,10 +97,10 @@ ENV PATH=$PATH:/usr/local/mysql/bin
 
 EXPOSE 3306
 
-# Copy entrypoint script
+ENV MYSQL_DATADIR=/var/lib/mysql
+
+# Copy entrypoint script at the very end to optimize build cache
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
-
-ENV MYSQL_DATADIR=/var/lib/mysql
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
