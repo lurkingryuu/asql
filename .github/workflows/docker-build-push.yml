@@ -1,4 +1,4 @@
-name: Build and Push Multi-Arch Docker Image
+name: Build and Push Docker Image
 
 on:
   push:
@@ -13,34 +13,59 @@ on:
       - master
   workflow_dispatch:
     inputs:
-      tag_suffix:
-        description: 'Tag suffix (e.g., .cedar)'
-        required: false
-        default: '.cedar'
       platforms:
-        description: 'Platforms to build (comma-separated)'
+        description: 'Platforms to build for (comma-separated)'
         required: false
         default: 'linux/amd64,linux/arm64'
+        type: string
+      tag_suffix:
+        description: 'Tag suffix (e.g., .authorization.plugin)'
+        required: false
+        default: '.authorization.plugin'
+        type: string
+      max_cpus:
+        description: 'Maximum CPUs to use for build'
+        required: false
+        type: string
 
 env:
-  DOCKER_USERNAME: lurkingryuu
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   IMAGE_NAME: mysql
+  REGISTRY: docker.io
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            env.BUILDKIT_STEP_LOG_MAX_SIZE=10485760
 
-      - name: Read MySQL version
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract MySQL version
         id: mysql_version
         run: |
           if [ -f "MYSQL_VERSION" ]; then
@@ -51,51 +76,66 @@ jobs:
             echo "version=latest" >> $GITHUB_OUTPUT
           fi
 
-      - name: Determine tags
-        id: tags
-        run: |
-          TAG_SUFFIX="${{ github.event.inputs.tag_suffix || '.cedar' }}"
-          VERSION="${{ steps.mysql_version.outputs.version }}"
-          
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # Use the tag name directly
-            FULL_TAG="${GITHUB_REF#refs/tags/}"
-          else
-            # Build version tag
-            FULL_TAG="v${VERSION}${TAG_SUFFIX}"
-          fi
-          
-          echo "full_tag=${FULL_TAG}" >> $GITHUB_OUTPUT
-          echo "Tags: ${FULL_TAG}, latest"
-
-      - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ steps.tags.outputs.full_tag }}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.mysql_version.outputs.version }}${{ inputs.tag_suffix || '.authorization.plugin' }},enable={{is_default_branch}}
 
-      - name: Build and push
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
           platforms: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            PARALLEL_JOBS=${{ inputs.max_cpus || 4 }}
 
-      - name: Image digest
-        run: echo "Image pushed with digest: ${{ steps.build-and-push.outputs.digest }}"
+      - name: Generate artifact attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME}}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
+      - name: Test image
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "Testing built image..."
+          docker run --rm ${{ env.REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.mysql_version.outputs.version }}${{ inputs.tag_suffix || '.authorization.plugin' }} --version
+
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Docker build failed',
+              body: `Docker build failed for ${context.sha}\n\nCheck the [workflow run](${context.payload.repository.html_url}/actions/runs/${context.runId}) for details.`,
+              labels: ['bug', 'docker']
+            })      - name: Notify on success
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: github.event.number,
+              body: `✅ Docker image built and pushed successfully!\n\nImage: \`${{ env.REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.mysql_version.outputs.version }}${{ inputs.tag_suffix || '.authorization.plugin' }}\``
+            })
