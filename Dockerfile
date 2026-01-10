@@ -31,21 +31,46 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /mysql-source
-# Copy build config and source directories explicitly. 
-# This ensures that changes to 'docker-entrypoint.sh' do NOT trigger a full rebuild.
-COPY CMakeLists.txt MYSQL_VERSION *.cmake ./
-COPY sql/ include/ storage/ cmake/ libmysql/ mysys/ extra/ strings/ vio/ \
-     components/ plugin/ share/ libservices/ libbinlogevents/ \
-     libbinlogstandalone/ libchangestreams/ sql-common/ utilities/ \
-     client/ router/ packaging/ man/ support-files/ ./
-
 RUN mkdir -p /tmp/boost /mysql-build
-WORKDIR /mysql-build
 
 # Pre-download Boost to avoid timeout issues during cmake
 RUN wget -q -O /tmp/boost.tar.bz2 https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2 && \
     tar -xjf /tmp/boost.tar.bz2 -C /tmp/boost --strip-components=1
+
+WORKDIR /mysql-source
+# Copy build config and source directories explicitly to protect the compilation cache.
+# We must copy directories to their respective names to preserve the project structure.
+COPY CMakeLists.txt MYSQL_VERSION *.cmake *.in *.h.cmake README INSTALL LICENSE ./
+COPY sql/ sql/
+COPY include/ include/
+COPY storage/ storage/
+COPY cmake/ cmake/
+COPY libmysql/ libmysql/
+COPY mysys/ mysys/
+COPY extra/ extra/
+COPY strings/ strings/
+COPY vio/ vio/
+COPY components/ components/
+COPY plugin/ plugin/
+COPY share/ share/
+COPY libservices/ libservices/
+COPY libbinlogevents/ libbinlogevents/
+COPY libbinlogstandalone/ libbinlogstandalone/
+COPY libchangestreams/ libchangestreams/
+COPY sql-common/ sql-common/
+COPY utilities/ utilities/
+COPY client/ client/
+COPY router/ router/
+COPY packaging/ packaging/
+COPY man/ man/
+COPY support-files/ support-files/
+COPY testclients/ testclients/
+COPY scripts/ scripts/
+COPY mysql-test/ mysql-test/
+COPY unittest/ unittest/
+COPY doxygen_resources/ doxygen_resources/
+
+WORKDIR /mysql-build
 
 RUN cmake /mysql-source \
     -DCMAKE_BUILD_TYPE=Release \
