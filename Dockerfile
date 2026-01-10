@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 FROM ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -33,8 +32,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /mysql-source
-# This prevent docker-entrypoint.sh changes from breaking this layer's cache.
-COPY --exclude=docker-entrypoint.sh . .
+# Copy build config and source directories explicitly. 
+# This ensures that changes to 'docker-entrypoint.sh' do NOT trigger a full rebuild.
+COPY CMakeLists.txt MYSQL_VERSION *.cmake ./
+COPY sql/ include/ storage/ cmake/ libmysql/ mysys/ extra/ strings/ vio/ \
+     components/ plugin/ share/ libservices/ libbinlogevents/ \
+     libbinlogstandalone/ libchangestreams/ sql-common/ utilities/ \
+     client/ router/ packaging/ man/ support-files/ ./
 
 RUN mkdir -p /tmp/boost /mysql-build
 WORKDIR /mysql-build
