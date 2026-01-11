@@ -373,7 +373,8 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
 
 // Create resource identifier based on event type (exposed for tests)
 std::string cedar_create_resource_identifier(const mysql_authorization_event *event) {
-  return auth_common::auth_create_resource_identifier(event);
+  std::string ns = cedar_authorization_namespace ? cedar_authorization_namespace : "";
+  return auth_common::auth_create_resource_identifier(event, ns);
 }
 
 // Main authorization callback function
