@@ -48,7 +48,7 @@ std::string auth_build_user_uid(const mysql_authorization_event *event);
 std::string auth_make_db_id(const mysql_authorization_event *event);
 std::string auth_make_table_id(const mysql_authorization_event *event);
 std::string auth_make_column_id(const mysql_authorization_event *event);
-std::string auth_create_resource_identifier(const mysql_authorization_event *event);
+std::string auth_create_resource_identifier(const mysql_authorization_event *event, const std::string &ns);
 
 // Context helpers
 std::string auth_get_day();
@@ -67,7 +67,8 @@ Json::Value auth_build_cedar_payload(const std::string &user_uid,
                                 const std::string &day,
                                 uint32_t date,
                                 uint32_t fmt_time,
-                                const std::string &client_ip);
+                                const std::string &client_ip,
+                                const std::string &ns);
 
 }  // namespace auth_common
 

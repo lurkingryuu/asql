@@ -63,36 +63,37 @@ std::string auth_make_column_id(const mysql_authorization_event *event) {
   return tbl;
 }
 
-std::string auth_create_resource_identifier(const mysql_authorization_event *event) {
+std::string auth_create_resource_identifier(const mysql_authorization_event *event, const std::string &ns) {
   std::string resource;
+  std::string prefix = ns.empty() ? "" : ns + "::";
   switch (event->event_subclass) {
     case MYSQL_AUTHORIZATION_DB_ACCESS: {
       std::string db = auth_make_db_id(event);
-      resource = "Database::\"" + (db.empty() ? std::string("unknown") : db) + "\"";
+      resource = prefix + "Database::\"" + (db.empty() ? std::string("unknown") : db) + "\"";
       break;
     }
     case MYSQL_AUTHORIZATION_TABLE_ACCESS: {
       std::string table_id = auth_make_table_id(event);
       if (!table_id.empty())
-        resource = "Table::\"" + table_id + "\"";
+        resource = prefix + "Table::\"" + table_id + "\"";
       else
-        resource = "Table::\"unknown\"";
+        resource = prefix + "Table::\"unknown\"";
       break;
     }
     case MYSQL_AUTHORIZATION_COLUMN_ACCESS: {
       std::string column_id = auth_make_column_id(event);
-      resource = "Column::\"" + column_id + "\"";
+      resource = prefix + "Column::\"" + column_id + "\"";
       break;
     }
     case MYSQL_AUTHORIZATION_ROUTINE_ACCESS: {
       std::string db = auth_make_db_id(event);
       std::string routine = event->routine.str ? std::string(event->routine.str) : std::string("unknown");
       if (!db.empty()) routine = db + "." + routine;
-      resource = "Routine::\"" + routine + "\"";
+      resource = prefix + "Routine::\"" + routine + "\"";
       break;
     }
     default:
-      resource = "Unknown::\"unknown\"";
+      resource = prefix + "Unknown::\"unknown\"";
       break;
   }
   return resource;
@@ -196,10 +197,13 @@ Json::Value auth_build_cedar_payload(const std::string &user_uid,
                                      const std::string &day,
                                      uint32_t date,
                                      uint32_t fmt_time,
-                                     const std::string &client_ip) {
+                                     const std::string &client_ip,
+                                     const std::string &ns) {
   Json::Value json_payload;
-  json_payload["principal"] = "User::\"" + user_uid + "\"";
-  json_payload["action"] = "Action::\"" + privilege + "\"";
+  std::string prefix = ns.empty() ? "" : ns + "::";
+  
+  json_payload["principal"] = prefix + "User::\"" + user_uid + "\"";
+  json_payload["action"] = prefix + "Action::\"" + privilege + "\"";
   json_payload["resource"] = resource_identifier;
   json_payload["context"]["day"] = day;
   json_payload["context"]["date"] = date;

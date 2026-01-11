@@ -101,6 +101,7 @@ using namespace std;
 
 // Plugin system variables
 static char *ddl_audit_cedar_url = nullptr;
+static char *ddl_audit_cedar_namespace = nullptr;
 static int ddl_audit_cedar_timeout = 5000;  // milliseconds
 static bool ddl_audit_enabled = true;
 
@@ -139,13 +140,13 @@ static int handle_table_access_event(MYSQL_THD thd, const void *event);
 static int handle_stored_program_event(MYSQL_THD thd, const void *event);
 
 // UID helpers (uniform across ddl_audit and cedar_authorization)
-std::string make_user_uid(const std::string &user, const std::string &host [[maybe_unused]]);
-std::string make_db_uid(const std::string &db);
-std::string make_table_uid(const std::string &db, const std::string &table);
+std::string make_user_uid(const std::string &user, const std::string &host [[maybe_unused]], const std::string &ns);
+std::string make_db_uid(const std::string &db, const std::string &ns);
+std::string make_table_uid(const std::string &db, const std::string &table, const std::string &ns);
 
 // Cedar agent /data helpers
-static bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id);
-static bool cedar_delete_entity(const std::string &entity_id);
+static bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id, const std::string &ns);
+static bool cedar_delete_entity(const std::string &entity_id, const std::string &entity_type, const std::string &ns);
 
 // DDL command IDs that we want to capture
 static const int ddl_commands[] = {
@@ -461,24 +462,30 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb, string* s
 }
 
 // UID helpers (definitions)
-std::string make_user_uid(const std::string &user, const std::string &host [[maybe_unused]]) {
+std::string make_user_uid(const std::string &user, const std::string &host [[maybe_unused]], const std::string &ns) {
     // For DDL audit plugin, we don't include host information in entity UIDs
     // Host information is available in authorization context via cedar_authorization plugin
-    return user;
+    std::string prefix = ns.empty() ? "" : ns + "::";
+    return prefix + "User::\"" + user + "\"";
 }
 
-std::string make_db_uid(const std::string &db) {
-    return db;
+std::string make_db_uid(const std::string &db, const std::string &ns) {
+    std::string prefix = ns.empty() ? "" : ns + "::";
+    return prefix + "Database::\"" + db + "\"";
 }
 
-std::string make_table_uid(const std::string &db, const std::string &table) {
-    if (!db.empty() && !table.empty()) return db + "." + table;
-    if (!table.empty()) return table;
-    return db; // may be empty
+std::string make_table_uid(const std::string &db, const std::string &table, const std::string &ns) {
+    std::string prefix = ns.empty() ? "" : ns + "::";
+    std::string table_id;
+    if (!db.empty() && !table.empty()) table_id = db + "." + table;
+    else if (!table.empty()) table_id = table;
+    else table_id = db;
+    
+    return prefix + "Table::\"" + table_id + "\"";
 }
 
 // Cedar agent /data helpers implementations
-bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id) {
+bool cedar_upsert_entity(const std::string &entity_type, const std::string &entity_id, const std::string &ns) {
     if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
         if (ddl_audit_plugin) {
             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
@@ -500,17 +507,21 @@ bool cedar_upsert_entity(const std::string &entity_type, const std::string &enti
         return false;
     }
 
+    // Build full type with namespace
+    std::string full_type = ns.empty() ? entity_type : ns + "::" + entity_type;
+    std::string full_uid = full_type + "::\"" + entity_id + "\"";
+
     // Build URL: <base>[/v1]/data/single/<urlencoded id>
     std::string base = std::string(ddl_audit_cedar_url);
     if (!base.empty() && base.back() == '/') base.pop_back();
     bool has_v1 = base.size() >= 3 && base.substr(base.size() - 3) == "/v1";
-    char *escaped = curl_easy_escape(curl, entity_id.c_str(), (int)entity_id.length());
-    std::string url = base + (has_v1 ? "" : "/v1") + "/data/single/" + (escaped ? escaped : entity_id.c_str());
+    char *escaped = curl_easy_escape(curl, full_uid.c_str(), (int)full_uid.length());
+    std::string url = base + (has_v1 ? "" : "/v1") + "/data/single/" + (escaped ? escaped : full_uid.c_str());
 
     // Build JSON payload: array with single entity
     Json::Value entity(Json::objectValue);
     entity["uid"]["id"] = entity_id;
-    entity["uid"]["type"] = entity_type;
+    entity["uid"]["type"] = full_type;
     entity["attrs"] = Json::Value(Json::objectValue);
     entity["parents"] = Json::Value(Json::arrayValue);
     Json::Value arr(Json::arrayValue);
@@ -571,7 +582,7 @@ bool cedar_upsert_entity(const std::string &entity_type, const std::string &enti
     }
 }
 
-bool cedar_delete_entity(const std::string &entity_id) {
+bool cedar_delete_entity(const std::string &entity_id, const std::string &entity_type, const std::string &ns) {
     if (!ddl_audit_cedar_url || strlen(ddl_audit_cedar_url) == 0) {
         if (ddl_audit_plugin) {
             my_plugin_log_message(&ddl_audit_plugin, MY_ERROR_LEVEL,
@@ -593,12 +604,16 @@ bool cedar_delete_entity(const std::string &entity_id) {
         return false;
     }
 
+    // Build full UID with namespace and type
+    std::string full_type = ns.empty() ? entity_type : ns + "::" + entity_type;
+    std::string full_uid = full_type + "::\"" + entity_id + "\"";
+
     // Build URL: <base>[/v1]/data/single/<urlencoded id>
     std::string base = std::string(ddl_audit_cedar_url);
     if (!base.empty() && base.back() == '/') base.pop_back();
     bool has_v1 = base.size() >= 3 && base.substr(base.size() - 3) == "/v1";
-    char *escaped = curl_easy_escape(curl, entity_id.c_str(), (int)entity_id.length());
-    std::string url = base + (has_v1 ? "" : "/v1") + "/data/single/" + (escaped ? escaped : entity_id.c_str());
+    char *escaped = curl_easy_escape(curl, full_uid.c_str(), (int)full_uid.length());
+    std::string url = base + (has_v1 ? "" : "/v1") + "/data/single/" + (escaped ? escaped : full_uid.c_str());
 
     std::string response;
 
@@ -744,6 +759,7 @@ int handle_query_event(MYSQL_THD thd, const void *event) {
     // Use LEX for table extraction to handle IF [NOT] EXISTS, quoting, etc.
     extract_table_from_lex(thd, event_query->sql_command_id, database, table);
     string command_name = get_command_name(event_query->sql_command_id);
+    string ns = ddl_audit_cedar_namespace ? ddl_audit_cedar_namespace : "MySQL";
 
     // Keep Cedar agent's /data in sync using uniform UIDs
     // Handle database-level entities
@@ -753,7 +769,7 @@ int handle_query_event(MYSQL_THD thd, const void *event) {
                 my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
                                "DDL Audit: Calling cedar_upsert_entity for Database '%s'", database.c_str());
             }
-            cedar_upsert_entity("Database", make_db_uid(database));
+            cedar_upsert_entity("Database", database, ns);
         } else {
             if (ddl_audit_plugin) {
                 my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
@@ -766,7 +782,7 @@ int handle_query_event(MYSQL_THD thd, const void *event) {
                 my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
                                "DDL Audit: Calling cedar_delete_entity for Database '%s'", database.c_str());
             }
-            cedar_delete_entity(make_db_uid(database));
+            cedar_delete_entity(database, "Database", ns);
         } else {
             if (ddl_audit_plugin) {
                 my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
@@ -787,20 +803,19 @@ int handle_query_event(MYSQL_THD thd, const void *event) {
         for (const auto& user_pair : users) {
             string user_name = user_pair.first;
             string user_host = user_pair.second;
-            string user_uid = make_user_uid(user_name, user_host);
             
             if (event_query->sql_command_id == SQLCOM_DROP_USER) {
                 if (ddl_audit_plugin) {
                     my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                                   "DDL Audit: Calling cedar_delete_entity for User '%s'", user_uid.c_str());
+                                   "DDL Audit: Calling cedar_delete_entity for User '%s'", user_name.c_str());
                 }
-                cedar_delete_entity(user_uid);
+                cedar_delete_entity(user_name, "User", ns);
             } else {
                 if (ddl_audit_plugin) {
                     my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                                   "DDL Audit: Calling cedar_upsert_entity for User '%s'", user_uid.c_str());
+                                   "DDL Audit: Calling cedar_upsert_entity for User '%s'", user_name.c_str());
                 }
-                cedar_upsert_entity("User", user_uid);
+                cedar_upsert_entity("User", user_name, ns);
             }
         }
         
@@ -813,18 +828,20 @@ int handle_query_event(MYSQL_THD thd, const void *event) {
     }
 
     if (!table.empty()) {
-        std::string table_uid = make_table_uid(database, table);
+        std::string table_id = table;
+        if (!database.empty()) table_id = database + "." + table;
+        
         switch (event_query->sql_command_id) {
             case SQLCOM_CREATE_TABLE:
             case SQLCOM_ALTER_TABLE:
             case SQLCOM_RENAME_TABLE:
                 if (!database.empty()) {
-                  cedar_upsert_entity("Database", make_db_uid(database));
+                  cedar_upsert_entity("Database", database, ns);
                 }
-                cedar_upsert_entity("Table", table_uid);
+                cedar_upsert_entity("Table", table_id, ns);
                 break;
             case SQLCOM_DROP_TABLE:
-                cedar_delete_entity(table_uid);
+                cedar_delete_entity(table_id, "Table", ns);
                 break;
             default:
                 break;
@@ -905,12 +922,12 @@ int handle_authentication_event(MYSQL_THD thd [[maybe_unused]], const void *even
     // Keep Cedar agent's /data in sync for User entity
     std::string tgt_user = auth_event->user.str ? std::string(auth_event->user.str, auth_event->user.length) : "";
     std::string tgt_host = auth_event->host.str ? std::string(auth_event->host.str, auth_event->host.length) : "";
-    std::string user_uid = make_user_uid(tgt_user, tgt_host);
+    std::string ns = ddl_audit_cedar_namespace ? ddl_audit_cedar_namespace : "MySQL";
 
     if (ddl_audit_plugin) {
         my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                       "DDL Audit: Auth event subclass=%d, user='%s', host='%s', user_uid='%s'",
-                       auth_event->event_subclass, tgt_user.c_str(), tgt_host.c_str(), user_uid.c_str());
+                       "DDL Audit: Auth event subclass=%d, user='%s', host='%s', namespace='%s'",
+                       auth_event->event_subclass, tgt_user.c_str(), tgt_host.c_str(), ns.c_str());
     }
 
     switch (auth_event->event_subclass) {
@@ -919,9 +936,9 @@ int handle_authentication_event(MYSQL_THD thd [[maybe_unused]], const void *even
             if (!tgt_user.empty()) {
                 if (ddl_audit_plugin) {
                     my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                                   "DDL Audit: Calling cedar_upsert_entity for User '%s'", user_uid.c_str());
+                                   "DDL Audit: Calling cedar_upsert_entity for User '%s'", tgt_user.c_str());
                 }
-                cedar_upsert_entity("User", user_uid);
+                cedar_upsert_entity("User", tgt_user, ns);
             } else {
                 if (ddl_audit_plugin) {
                     my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
@@ -933,9 +950,9 @@ int handle_authentication_event(MYSQL_THD thd [[maybe_unused]], const void *even
             if (!tgt_user.empty()) {
                 if (ddl_audit_plugin) {
                     my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
-                                   "DDL Audit: Calling cedar_delete_entity for User '%s'", user_uid.c_str());
+                                   "DDL Audit: Calling cedar_delete_entity for User '%s'", tgt_user.c_str());
                 }
-                cedar_delete_entity(user_uid);
+                cedar_delete_entity(tgt_user, "User", ns);
             } else {
                 if (ddl_audit_plugin) {
                     my_plugin_log_message(&ddl_audit_plugin, MY_WARNING_LEVEL,
@@ -946,8 +963,8 @@ int handle_authentication_event(MYSQL_THD thd [[maybe_unused]], const void *even
         case MYSQL_AUDIT_AUTHENTICATION_AUTHID_RENAME: {
             std::string new_user = auth_event->new_user.str ? std::string(auth_event->new_user.str, auth_event->new_user.length) : "";
             std::string new_host = auth_event->new_host.str ? std::string(auth_event->new_host.str, auth_event->new_host.length) : tgt_host;
-            if (!tgt_user.empty()) cedar_delete_entity(user_uid);
-            if (!new_user.empty()) cedar_upsert_entity("User", make_user_uid(new_user, new_host));
+            if (!tgt_user.empty()) cedar_delete_entity(tgt_user, "User", ns);
+            if (!new_user.empty()) cedar_upsert_entity("User", new_user, ns);
             break;
         }
         default:
@@ -1144,8 +1161,14 @@ static MYSQL_SYSVAR_BOOL(enabled, ddl_audit_enabled,
                          "Enable/disable DDL audit plugin",
                          nullptr, nullptr, true);
 
+static MYSQL_SYSVAR_STR(cedar_namespace, ddl_audit_cedar_namespace,
+                        PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+                        "Namespace for Cedar entities (e.g., MySQL)",
+                        nullptr, nullptr, "MySQL");
+
 static SYS_VAR *ddl_audit_system_variables[] = {
     MYSQL_SYSVAR(cedar_url),
+    MYSQL_SYSVAR(cedar_namespace),
     MYSQL_SYSVAR(cedar_timeout),
     MYSQL_SYSVAR(enabled),
     nullptr

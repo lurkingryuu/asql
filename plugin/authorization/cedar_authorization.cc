@@ -102,6 +102,7 @@ using namespace std;
 
 // Plugin system variables
 static char *cedar_authorization_url;
+static char *cedar_authorization_namespace;
 static int cedar_authorization_timeout = 5000;  // milliseconds
 
 // Plugin initialization flag
@@ -147,7 +148,8 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
                                        const std::string& day,
                                        uint32_t date,
                                        uint32_t fmt_time,
-                                       const std::string& client_ip) {
+                                       const std::string& client_ip,
+                                       const std::string& ns) {
   // Initialize libcurl
   CURL *curl = curl_easy_init();
   if (!curl) {
@@ -161,7 +163,7 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
   // Create JSON payload for single privilege
   Json::Value json_payload = auth_common::auth_build_cedar_payload(
       user_uid_value, resource_identifier, privilege, day, date, fmt_time,
-      client_ip);
+      client_ip, ns);
 
   Json::StreamWriterBuilder builder;
   std::string json_string = Json::writeString(builder, json_payload);
@@ -293,12 +295,13 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
   std::string user_uid_value = auth_common::auth_build_user_uid(event);
 
   // Create resource identifier
-  std::string resource_identifier = auth_common::auth_create_resource_identifier(event);
+  std::string ns = cedar_authorization_namespace ? cedar_authorization_namespace : "MySQL";
+  std::string resource_identifier = auth_common::auth_create_resource_identifier(event, ns);
 
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization check: user=%s, resource=%s, privileges=%lu",
-                          user_uid_value.c_str(), resource_identifier.c_str(), event->privileges);
+                          "Cedar authorization check: user=%s, resource=%s, privileges=%lu, namespace=%s",
+                          user_uid_value.c_str(), resource_identifier.c_str(), event->privileges, ns.c_str());
   }
 
   // Get context information
@@ -326,7 +329,7 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
       
       // Make individual Cedar request for this privilege
       int privilege_result = check_single_privilege_cedar(
-          user_uid_value, resource_identifier, privilege, day, date, fmt_time, client_ip);
+          user_uid_value, resource_identifier, privilege, day, date, fmt_time, client_ip, ns);
       
       if (privilege_result == -1) {
         // Error occurred, return IGNORE
@@ -514,6 +517,12 @@ static MYSQL_SYSVAR_STR(url,                                        // name
                         nullptr                                      // default
 );
 
+static MYSQL_SYSVAR_STR(
+    namespace, cedar_authorization_namespace,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+    "Namespace for Cedar authorization (e.g., MySQL, MariaDB)", nullptr,
+    nullptr, "MySQL");
+
 static MYSQL_SYSVAR_INT(
     timeout,                                                         // name
     cedar_authorization_timeout,                                     // var
@@ -529,7 +538,7 @@ static MYSQL_SYSVAR_INT(
 
 // System variables array
 static SYS_VAR *cedar_authorization_system_vars[] = {
-    MYSQL_SYSVAR(url), MYSQL_SYSVAR(timeout), nullptr};
+    MYSQL_SYSVAR(url), MYSQL_SYSVAR(namespace), MYSQL_SYSVAR(timeout), nullptr};
 
 // Plugin declaration
 mysql_declare_plugin(cedar_authorization){
