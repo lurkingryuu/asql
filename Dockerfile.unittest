@@ -85,13 +85,18 @@ RUN cmake /mysql-source \
     -DWITH_SSL=system \
     -G Ninja
 
-# Build only the components needed for unittests to save time
-# If a specific test is desired, it can be built specifically.
-# For now, we build the test-unit target which builds all unittests.
+# Build the project (including unittests that are not excluded from all)
 RUN if [ -n "${PARALLEL_JOBS}" ]; then \
-        ninja -j${PARALLEL_JOBS} test-unit; \
+        ninja -j${PARALLEL_JOBS}; \
     else \
-        ninja -j$(nproc) test-unit; \
+        ninja -j$(nproc); \
+    fi
+
+# Explicitly build the merge tests and authorization tests just in case
+RUN if [ -n "${PARALLEL_JOBS}" ]; then \
+        ninja -j${PARALLEL_JOBS} authorization-t merge_large_tests-t merge_small_tests-t; \
+    else \
+        ninja -j$(nproc) authorization-t merge_large_tests-t merge_small_tests-t; \
     fi
 
 # Default command to run all tests
