@@ -70,9 +70,9 @@
 
 #include <curl/curl.h>
 #include <json/json.h>
+#include <json/value.h>
 #include <sstream>
 #include <string>
-#include <json/value.h>
 
 // Plugin system variables
 static char *external_authorization_url;
@@ -159,9 +159,10 @@ static mysql_authorization_result_t call_external_service(
     const mysql_authorization_event *event) {
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "External authorization service called for user: %s@%s, database: %s, table: %s, event: %s",
+                          "External authorization service called for user: "
+                          "%s@%s, database: %s, table: %s, event: %s",
                           event->user.str ? event->user.str : "NULL",
-                          event->host.str ? event->host.str : "NULL", 
+                          event->host.str ? event->host.str : "NULL",
                           event->database.str ? event->database.str : "NULL",
                           event->table.str ? event->table.str : "NULL",
                           event_type_to_string(event->event_subclass).c_str());
@@ -169,24 +170,27 @@ static mysql_authorization_result_t call_external_service(
 
   if (!external_authorization_url || strlen(external_authorization_url) == 0) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "External authorization URL not configured, returning IGNORE");
+      my_plugin_log_message(
+          &plugin_handle, MY_WARNING_LEVEL,
+          "External authorization URL not configured, returning IGNORE");
     }
     return MYSQL_AUTHORIZATION_IGNORE;
   }
 
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "External authorization URL configured: %s, timeout: %d ms",
-                          external_authorization_url, external_authorization_timeout);
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "External authorization URL configured: %s, timeout: %d ms",
+        external_authorization_url, external_authorization_timeout);
   }
 
   // Initialize libcurl
   CURL *curl = curl_easy_init();
   if (!curl) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
-                            "Failed to initialize libcurl for external authorization");
+      my_plugin_log_message(
+          &plugin_handle, MY_ERROR_LEVEL,
+          "Failed to initialize libcurl for external authorization");
     }
     return MYSQL_AUTHORIZATION_IGNORE;
   }
@@ -203,7 +207,8 @@ static mysql_authorization_result_t call_external_service(
   json_payload["missing_privileges"] =
       privileges_to_json(event->missing_privileges);
   json_payload["event_type"] = event_type_to_string(event->event_subclass);
-  json_payload["requirement_mode"] = requirement_mode_to_string(event->requirement_mode);
+  json_payload["requirement_mode"] =
+      requirement_mode_to_string(event->requirement_mode);
   json_payload["sql_command"] = event->sql_command;
   json_payload["query"] = event->query.str ? event->query.str : "";
   json_payload["is_procedure"] = event->is_procedure;
@@ -214,11 +219,13 @@ static mysql_authorization_result_t call_external_service(
   // Log the complete request payload
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Sending external authorization request to %s", external_authorization_url);
+                          "Sending external authorization request to %s",
+                          external_authorization_url);
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Request payload: %s", json_string.c_str());
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Privileges string: %s", privileges_to_string(event->privileges).c_str());
+                          "Privileges string: %s",
+                          privileges_to_string(event->privileges).c_str());
   }
 
   // Configure curl options
@@ -238,16 +245,17 @@ static mysql_authorization_result_t call_external_service(
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Performing HTTP request to external service...");
   }
-  
+
   CURLcode res = curl_easy_perform(curl);
   long response_code;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
 
   // Log response details
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "HTTP request completed. cURL result: %d, HTTP code: %ld",
-                          res, response_code);
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "HTTP request completed. cURL result: %d, HTTP code: %ld", res,
+        response_code);
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Response body: %s", response.data.c_str());
   }
@@ -258,17 +266,19 @@ static mysql_authorization_result_t call_external_service(
 
   if (res != CURLE_OK) {
     if (plugin_handle)
-      my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
-                            "External authorization request failed: %s (cURL error: %d)",
-                            curl_easy_strerror(res), res);
+      my_plugin_log_message(
+          &plugin_handle, MY_ERROR_LEVEL,
+          "External authorization request failed: %s (cURL error: %d)",
+          curl_easy_strerror(res), res);
     return MYSQL_AUTHORIZATION_IGNORE;
   }
 
   if (response_code != 200) {
     if (plugin_handle)
-      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "External authorization server returned HTTP %ld, response: %s",
-                            response_code, response.data.c_str());
+      my_plugin_log_message(
+          &plugin_handle, MY_WARNING_LEVEL,
+          "External authorization server returned HTTP %ld, response: %s",
+          response_code, response.data.c_str());
     return MYSQL_AUTHORIZATION_IGNORE;
   }
 
@@ -297,7 +307,7 @@ static mysql_authorization_result_t call_external_service(
   }
 
   std::string result = json_response["result"].asString();
-  
+
   mysql_authorization_result_t final_decision;
   if (result == "grant") {
     final_decision = MYSQL_AUTHORIZATION_GRANT;
@@ -306,15 +316,16 @@ static mysql_authorization_result_t call_external_service(
   } else {
     final_decision = MYSQL_AUTHORIZATION_IGNORE;
   }
-  
+
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "External authorization result: '%s' -> Decision: %s", 
-                          result.c_str(),
-                          final_decision == MYSQL_AUTHORIZATION_GRANT ? "GRANT" :
-                          final_decision == MYSQL_AUTHORIZATION_DENY ? "DENY" : "IGNORE");
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "External authorization result: '%s' -> Decision: %s", result.c_str(),
+        final_decision == MYSQL_AUTHORIZATION_GRANT  ? "GRANT"
+        : final_decision == MYSQL_AUTHORIZATION_DENY ? "DENY"
+                                                     : "IGNORE");
   }
-  
+
   return final_decision;
 }
 
@@ -322,15 +333,17 @@ static mysql_authorization_result_t call_external_service(
 static mysql_authorization_result_t external_authorization_check(
     const mysql_authorization_event *event) {
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "External authorization callback invoked! Plugin initialized: %s",
-                          plugin_initialized ? "YES" : "NO");
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "External authorization callback invoked! Plugin initialized: %s",
+        plugin_initialized ? "YES" : "NO");
   }
-  
+
   if (!plugin_initialized) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "External authorization plugin not initialized, returning IGNORE");
+      my_plugin_log_message(
+          &plugin_handle, MY_WARNING_LEVEL,
+          "External authorization plugin not initialized, returning IGNORE");
     }
     return MYSQL_AUTHORIZATION_IGNORE;
   }
@@ -339,7 +352,7 @@ static mysql_authorization_result_t external_authorization_check(
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Proceeding with external authorization check...");
   }
-  
+
   return call_external_service(event);
 }
 
@@ -351,12 +364,13 @@ static st_mysql_authorization external_authorization_descriptor = {
 static int external_authorization_init(MYSQL_PLUGIN plugin_info) {
   // Save plugin handle for logging first
   plugin_handle = plugin_info;
-  
+
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "External authorization plugin initialization starting...");
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "External authorization plugin initialization starting...");
   }
-  
+
   // Initialize libcurl globally
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) {
     if (plugin_handle) {
@@ -367,14 +381,16 @@ static int external_authorization_init(MYSQL_PLUGIN plugin_info) {
   }
 
   plugin_initialized = true;
-  
+
   if (plugin_handle) {
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "External authorization plugin successfully initialized!");
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "External authorization plugin successfully initialized!");
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Plugin will check external_authorization_url system variable for service URL");
+                          "Plugin will check external_authorization_url system "
+                          "variable for service URL");
   }
-  
+
   return 0;
 }
 
@@ -382,18 +398,20 @@ static int external_authorization_init(MYSQL_PLUGIN plugin_info) {
 static int external_authorization_deinit(MYSQL_PLUGIN plugin_info
                                          [[maybe_unused]]) {
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "External authorization plugin deinitialization starting...");
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "External authorization plugin deinitialization starting...");
   }
-  
+
   plugin_initialized = false;
   curl_global_cleanup();
-  
+
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "External authorization plugin successfully deinitialized");
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "External authorization plugin successfully deinitialized");
   }
-  
+
   plugin_handle = nullptr;
   return 0;
 }

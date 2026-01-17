@@ -41,14 +41,16 @@ class Value;
 namespace auth_common {
 
 // Event helpers
-std::string auth_event_type_to_string(mysql_authorization_event_subclass_t event_type);
+std::string auth_event_type_to_string(
+    mysql_authorization_event_subclass_t event_type);
 
 // UID/identifier helpers
 std::string auth_build_user_uid(const mysql_authorization_event *event);
 std::string auth_make_db_id(const mysql_authorization_event *event);
 std::string auth_make_table_id(const mysql_authorization_event *event);
 std::string auth_make_column_id(const mysql_authorization_event *event);
-std::string auth_create_resource_identifier(const mysql_authorization_event *event, const std::string &ns);
+std::string auth_create_resource_identifier(
+    const mysql_authorization_event *event, const std::string &ns);
 
 // Context helpers
 std::string auth_get_day();
@@ -61,15 +63,9 @@ std::string auth_get_primary_action(unsigned long privileges);
 Json::Value auth_privileges_to_json(unsigned long privileges);
 
 // Cedar payload helper (pure construction, no network)
-Json::Value auth_build_cedar_payload(const std::string &user_uid,
-                                const std::string &resource_identifier,
-                                const std::string &privilege,
-                                const std::string &day,
-                                uint32_t date,
-                                uint32_t fmt_time,
-                                const std::string &client_ip,
-                                const std::string &ns);
+Json::Value auth_build_cedar_payload(
+    const std::string &user_uid, const std::string &resource_identifier,
+    const std::string &privilege, const std::string &day, uint32_t date,
+    uint32_t fmt_time, const std::string &client_ip, const std::string &ns);
 
 }  // namespace auth_common
-
-

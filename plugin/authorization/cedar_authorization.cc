@@ -42,7 +42,8 @@
   SET GLOBAL cedar_authorization_timeout = 5000;  -- milliseconds
 
   Cedar Service API:
-  The plugin sends separate POST requests to /v1/is_authorized for each privilege:
+  The plugin sends separate POST requests to /v1/is_authorized for each
+  privilege:
   {
     "principal": "User::\"user_hash\"",
     "action": "Action::\"Select\"",
@@ -59,7 +60,7 @@
       }
     }
   }
-  
+
   Note: Since Cedar only handles one action per request, the plugin makes
   separate requests for each privilege (SELECT, INSERT, UPDATE, etc.) and
   only grants access if ALL privileges are allowed by Cedar.
@@ -80,10 +81,10 @@
 
 #include <curl/curl.h>
 #include <json/json.h>
+#include <json/value.h>
 #include <sstream>
 #include <string>
 #include <vector>
-#include <json/value.h>
 
 #include "plugin/authorization/authorization_common.h"
 #include "plugin/authorization/cedar_authorization.h"
@@ -91,19 +92,46 @@
 #include "sql/auth/auth_acls.h"
 #include "sql/sql_class.h"
 // Needed for Protocol_classic definition used via THD
-#include "sql/protocol_classic.h"
 #include "my_dbug.h"
+#include "sql/protocol_classic.h"
 #include "violite.h"
 
-#include <ctime>
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 using namespace std;
 
 // Plugin system variables
 static char *cedar_authorization_url;
 static char *cedar_authorization_namespace;
 static int cedar_authorization_timeout = 5000;  // milliseconds
+
+// Caching system variables
+static bool cedar_authorization_cache_enabled = true;
+static int cedar_authorization_cache_size = 1024;
+static int cedar_authorization_cache_ttl = 300;  // seconds
+
+// Cache implementation
+#include <mutex>
+#include <unordered_map>
+
+struct AuthCacheKeyHash {
+  std::size_t operator()(const AuthCacheKey &k) const {
+    size_t h = std::hash<std::string>{}(k.user);
+    h ^=
+        std::hash<std::string>{}(k.resource) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<std::string>{}(k.action) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<std::string>{}(k.day) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(k.date) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(k.time) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<std::string>{}(k.ip) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+
+static std::unordered_map<AuthCacheKey, AuthCacheEntry, AuthCacheKeyHash>
+    auth_cache;
+static mysql_mutex_t LOCK_auth_cache;
 
 // Plugin initialization flag
 static bool plugin_initialized = false;
@@ -142,20 +170,44 @@ std::string privileges_to_string(unsigned long privileges) {
 // Use shared helpers from authorization_common for JSON and mapping
 
 // Check a single privilege with Cedar authorization service
-static int check_single_privilege_cedar(const std::string& user_uid_value,
-                                       const std::string& resource_identifier,
-                                       const std::string& privilege,
-                                       const std::string& day,
-                                       uint32_t date,
-                                       uint32_t fmt_time,
-                                       const std::string& client_ip,
-                                       const std::string& ns) {
+static int check_single_privilege_cedar(
+    const std::string &user_uid_value, const std::string &resource_identifier,
+    const std::string &privilege, const std::string &day, uint32_t date,
+    uint32_t fmt_time, const std::string &fmt_ip, const std::string &ns) {
+  // Check cache if enabled
+  if (cedar_authorization_cache_enabled) {
+    AuthCacheKey key{
+        user_uid_value, resource_identifier, privilege, day, date, fmt_time,
+        fmt_ip};
+    std::time_t now = std::time(nullptr);
+
+    mysql_mutex_lock(&LOCK_auth_cache);
+    auto it = auth_cache.find(key);
+    if (it != auth_cache.end()) {
+      if (now < it->second.expires) {
+        int result = it->second.result;
+        mysql_mutex_unlock(&LOCK_auth_cache);
+        if (plugin_handle) {
+          my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                                "Cache hit for privilege %s: %d",
+                                privilege.c_str(), result);
+        }
+        return result;
+      } else {
+        // Expired
+        auth_cache.erase(it);
+      }
+    }
+    mysql_mutex_unlock(&LOCK_auth_cache);
+  }
+
   // Initialize libcurl
   CURL *curl = curl_easy_init();
   if (!curl) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
-                            "Failed to initialize libcurl for Cedar authorization");
+      my_plugin_log_message(
+          &plugin_handle, MY_ERROR_LEVEL,
+          "Failed to initialize libcurl for Cedar authorization");
     }
     return 0;
   }
@@ -170,8 +222,10 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
 
   // Log the request payload
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Sending Cedar authorization request for privilege: %s", privilege.c_str());
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "Sending Cedar authorization request for privilege: %s",
+        privilege.c_str());
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Request payload: %s", json_string.c_str());
   }
@@ -196,7 +250,8 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
   // Log response details
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "HTTP request completed for privilege %s. cURL result: %d, HTTP code: %ld",
+                          "HTTP request completed for privilege %s. cURL "
+                          "result: %d, HTTP code: %ld",
                           privilege.c_str(), res, response_code);
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Response body: %s", response.data.c_str());
@@ -209,7 +264,8 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
   if (res != CURLE_OK) {
     if (plugin_handle)
       my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
-                            "Cedar authorization request failed for privilege %s: %s (cURL error: %d)",
+                            "Cedar authorization request failed for privilege "
+                            "%s: %s (cURL error: %d)",
                             privilege.c_str(), curl_easy_strerror(res), res);
     return -1;  // Signal error
   }
@@ -217,8 +273,10 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
   if (response_code != 200) {
     if (plugin_handle)
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "Cedar authorization server returned HTTP %ld for privilege %s, response: %s",
-                            response_code, privilege.c_str(), response.data.c_str());
+                            "Cedar authorization server returned HTTP %ld for "
+                            "privilege %s, response: %s",
+                            response_code, privilege.c_str(),
+                            response.data.c_str());
     return -1;  // Signal error
   }
 
@@ -240,14 +298,15 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
 
   if (!json_response.isMember("decision")) {
     if (plugin_handle)
-      my_plugin_log_message(
-          &plugin_handle, MY_WARNING_LEVEL,
-          "Cedar authorization response missing 'decision' field for privilege %s",
-          privilege.c_str());
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "Cedar authorization response missing 'decision' "
+                            "field for privilege %s",
+                            privilege.c_str());
     return -1;  // Signal error
   }
 
   std::string decision = json_response["decision"].asString();
+  int result = (decision == "Allow") ? 1 : 0;
 
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -255,24 +314,45 @@ static int check_single_privilege_cedar(const std::string& user_uid_value,
                           privilege.c_str(), decision.c_str());
   }
 
-  if (decision == "Allow") {
-    return 1;  // Access granted
-  } else {
-    return 0;  // Access denied
+  // Update cache if enabled
+  if (cedar_authorization_cache_enabled) {
+    AuthCacheKey key{
+        user_uid_value, resource_identifier, privilege, day, date, fmt_time,
+        fmt_ip};
+    std::time_t now = std::time(nullptr);
+    AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
+
+    mysql_mutex_lock(&LOCK_auth_cache);
+    // Simple eviction if full: clear half the cache or just one?
+    // For now, if we exceed size, we just clear it all to be safe and simple.
+    if (auth_cache.size() >= (size_t)cedar_authorization_cache_size) {
+      if (plugin_handle) {
+        my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                              "Cache full, clearing %zu entries",
+                              auth_cache.size());
+      }
+      auth_cache.clear();
+    }
+    auth_cache[key] = entry;
+    mysql_mutex_unlock(&LOCK_auth_cache);
   }
+
+  return result;
 }
 
 // Check access using Cedar authorization service
 int cedar_check_access_core(const mysql_authorization_event *event) {
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization service called for user: %s@%s, database: %s, table: %s, column: %s, event: %s",
-                          event->user.str ? event->user.str : "NULL",
-                          event->host.str ? event->host.str : "NULL",
-                          event->database.str ? event->database.str : "NULL",
-                          event->table.str ? event->table.str : "NULL",
-                          event->column.str ? event->column.str : "NULL",
-                          auth_common::auth_event_type_to_string(event->event_subclass).c_str());
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "Cedar authorization service called for user: %s@%s, database: %s, "
+        "table: %s, column: %s, event: %s",
+        event->user.str ? event->user.str : "NULL",
+        event->host.str ? event->host.str : "NULL",
+        event->database.str ? event->database.str : "NULL",
+        event->table.str ? event->table.str : "NULL",
+        event->column.str ? event->column.str : "NULL",
+        auth_common::auth_event_type_to_string(event->event_subclass).c_str());
   }
 
   if (!plugin_initialized) {
@@ -285,8 +365,9 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
 
   if (!cedar_authorization_url || strlen(cedar_authorization_url) == 0) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "Cedar authorization URL not configured; caller should IGNORE");
+      my_plugin_log_message(
+          &plugin_handle, MY_WARNING_LEVEL,
+          "Cedar authorization URL not configured; caller should IGNORE");
     }
     return -1;  // signal IGNORE
   }
@@ -295,13 +376,17 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
   std::string user_uid_value = auth_common::auth_build_user_uid(event);
 
   // Create resource identifier
-  std::string ns = cedar_authorization_namespace ? cedar_authorization_namespace : "MySQL";
-  std::string resource_identifier = auth_common::auth_create_resource_identifier(event, ns);
+  std::string ns =
+      cedar_authorization_namespace ? cedar_authorization_namespace : "MySQL";
+  std::string resource_identifier =
+      auth_common::auth_create_resource_identifier(event, ns);
 
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization check: user=%s, resource=%s, privileges=%lu, namespace=%s",
-                          user_uid_value.c_str(), resource_identifier.c_str(), event->privileges, ns.c_str());
+                          "Cedar authorization check: user=%s, resource=%s, "
+                          "privileges=%lu, namespace=%s",
+                          user_uid_value.c_str(), resource_identifier.c_str(),
+                          event->privileges, ns.c_str());
   }
 
   // Get context information
@@ -317,25 +402,29 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
   }
 
   // Check each privilege individually with Cedar
-  // We need to make separate requests for each privilege since Cedar only handles one action per request
+  // We need to make separate requests for each privilege since Cedar only
+  // handles one action per request
   bool all_privileges_allowed = true;
-  
+
   for (const auto &[privilege, offset] : privs::global_acls_map) {
     if (event->privileges & (1 << offset)) {
       if (plugin_handle) {
         my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                              "Checking Cedar authorization for privilege: %s", privilege.c_str());
+                              "Checking Cedar authorization for privilege: %s",
+                              privilege.c_str());
       }
-      
+
       // Make individual Cedar request for this privilege
       int privilege_result = check_single_privilege_cedar(
-          user_uid_value, resource_identifier, privilege, day, date, fmt_time, client_ip, ns);
-      
+          user_uid_value, resource_identifier, privilege, day, date, fmt_time,
+          client_ip, ns);
+
       if (privilege_result == -1) {
         // Error occurred, return IGNORE
         if (plugin_handle) {
           my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
-                                "Cedar authorization error for privilege: %s", privilege.c_str());
+                                "Cedar authorization error for privilege: %s",
+                                privilege.c_str());
         }
         return -1;  // Signal IGNORE
       } else if (privilege_result == 0) {
@@ -343,14 +432,16 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
         all_privileges_allowed = false;
         if (plugin_handle) {
           my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                                "Cedar denied privilege: %s", privilege.c_str());
+                                "Cedar denied privilege: %s",
+                                privilege.c_str());
         }
         // Continue checking other privileges to log all denials
       } else {
         // This privilege was allowed
         if (plugin_handle) {
           my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                                "Cedar allowed privilege: %s", privilege.c_str());
+                                "Cedar allowed privilege: %s",
+                                privilege.c_str());
         }
       }
     }
@@ -372,8 +463,10 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
 }
 
 // Create resource identifier based on event type (exposed for tests)
-std::string cedar_create_resource_identifier(const mysql_authorization_event *event) {
-  std::string ns = cedar_authorization_namespace ? cedar_authorization_namespace : "";
+std::string cedar_create_resource_identifier(
+    const mysql_authorization_event *event) {
+  std::string ns =
+      cedar_authorization_namespace ? cedar_authorization_namespace : "";
   return auth_common::auth_create_resource_identifier(event, ns);
 }
 
@@ -381,39 +474,47 @@ std::string cedar_create_resource_identifier(const mysql_authorization_event *ev
 mysql_authorization_result_t cedar_check(
     const mysql_authorization_event *event) {
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization callback invoked for user: %s@%s, event: %s, database: %s, table: %s, column: %s, privileges: %lu",
-                          event->user.str ? event->user.str : "NULL",
-                          event->host.str ? event->host.str : "NULL",
-                          auth_common::auth_event_type_to_string(event->event_subclass).c_str(),
-                          event->database.str ? event->database.str : "NULL",
-                          event->table.str ? event->table.str : "NULL",
-                          event->column.str ? event->column.str : "NULL",
-                          (unsigned long)event->privileges);
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "Cedar authorization callback invoked for user: %s@%s, event: %s, "
+        "database: %s, table: %s, column: %s, privileges: %lu",
+        event->user.str ? event->user.str : "NULL",
+        event->host.str ? event->host.str : "NULL",
+        auth_common::auth_event_type_to_string(event->event_subclass).c_str(),
+        event->database.str ? event->database.str : "NULL",
+        event->table.str ? event->table.str : "NULL",
+        event->column.str ? event->column.str : "NULL",
+        (unsigned long)event->privileges);
   }
 
   if (!plugin_initialized) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "Cedar authorization plugin not initialized, returning IGNORE");
+      my_plugin_log_message(
+          &plugin_handle, MY_WARNING_LEVEL,
+          "Cedar authorization plugin not initialized, returning IGNORE");
     }
     return MYSQL_AUTHORIZATION_IGNORE;
   }
 
-  // Handle presence checks by allowing them (these are MySQL's internal discovery probes)
-  if (event->requirement_mode == mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE) {
+  // Handle presence checks by allowing them (these are MySQL's internal
+  // discovery probes)
+  if (event->requirement_mode ==
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                            "Cedar authorization: presence check -> GRANT (internal probe)");
+      my_plugin_log_message(
+          &plugin_handle, MY_INFORMATION_LEVEL,
+          "Cedar authorization: presence check -> GRANT (internal probe)");
     }
     return MYSQL_AUTHORIZATION_GRANT;
   }
 
-  // Handle zero-privilege checks by allowing them (these are also internal checks)
+  // Handle zero-privilege checks by allowing them (these are also internal
+  // checks)
   if (event->privileges == 0) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                            "Cedar authorization: zero-priv check -> GRANT (internal check)");
+      my_plugin_log_message(
+          &plugin_handle, MY_INFORMATION_LEVEL,
+          "Cedar authorization: zero-priv check -> GRANT (internal check)");
     }
     return MYSQL_AUTHORIZATION_GRANT;
   }
@@ -424,9 +525,11 @@ mysql_authorization_result_t cedar_check(
       event->event_subclass != MYSQL_AUTHORIZATION_COLUMN_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS) {
     if (plugin_handle) {
-      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                            "Cedar authorization: unsupported event type %s, returning IGNORE",
-                            auth_common::auth_event_type_to_string(event->event_subclass).c_str());
+      my_plugin_log_message(
+          &plugin_handle, MY_INFORMATION_LEVEL,
+          "Cedar authorization: unsupported event type %s, returning IGNORE",
+          auth_common::auth_event_type_to_string(event->event_subclass)
+              .c_str());
     }
     return MYSQL_AUTHORIZATION_IGNORE;
   }
@@ -464,8 +567,9 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
   plugin_handle = plugin_info;
 
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization plugin initialization starting...");
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "Cedar authorization plugin initialization starting...");
   }
 
   // Initialize libcurl globally
@@ -477,13 +581,18 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
     return 1;
   }
 
+  // Initialize cache mutex
+  mysql_mutex_init(0, &LOCK_auth_cache, MY_MUTEX_INIT_FAST);
+
   plugin_initialized = true;
 
   if (plugin_handle) {
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "Cedar authorization plugin successfully initialized!");
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization plugin successfully initialized!");
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Plugin will check cedar_authorization_url system variable for service URL");
+                          "Plugin will check cedar_authorization_url system "
+                          "variable for service URL");
   }
 
   return 0;
@@ -492,16 +601,22 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
 // Plugin deinitialization
 int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization plugin deinitialization starting...");
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "Cedar authorization plugin deinitialization starting...");
   }
 
   plugin_initialized = false;
   curl_global_cleanup();
 
+  // Destroy cache mutex and clear cache
+  mysql_mutex_destroy(&LOCK_auth_cache);
+  auth_cache.clear();
+
   if (plugin_handle) {
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "Cedar authorization plugin successfully deinitialized");
+    my_plugin_log_message(
+        &plugin_handle, MY_INFORMATION_LEVEL,
+        "Cedar authorization plugin successfully deinitialized");
   }
 
   plugin_handle = nullptr;
@@ -510,12 +625,12 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
 
 // System variables
 static MYSQL_SYSVAR_STR(url,                                        // name
-                        cedar_authorization_url,                     // var
+                        cedar_authorization_url,                    // var
                         PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,  // flags
-                        "URL of Cedar authorization service",        // comment
-                        nullptr,                                     // check
-                        nullptr,                                     // update
-                        nullptr                                      // default
+                        "URL of Cedar authorization service",       // comment
+                        nullptr,                                    // check
+                        nullptr,                                    // update
+                        nullptr                                     // default
 );
 
 static MYSQL_SYSVAR_STR(
@@ -525,38 +640,70 @@ static MYSQL_SYSVAR_STR(
     nullptr, "MySQL");
 
 static MYSQL_SYSVAR_INT(
-    timeout,                                                         // name
-    cedar_authorization_timeout,                                     // var
-    PLUGIN_VAR_RQCMDARG,                                            // flags
-    "Timeout for Cedar authorization requests in milliseconds",     // comment
-    nullptr,                                                         // check
-    nullptr,                                                         // update
-    5000,                                                           // default
-    1000,                                                           // min
-    60000,                                                          // max
-    0  // block_size
+    timeout,                                                     // name
+    cedar_authorization_timeout,                                 // var
+    PLUGIN_VAR_RQCMDARG,                                         // flags
+    "Timeout for Cedar authorization requests in milliseconds",  // comment
+    nullptr,                                                     // check
+    nullptr,                                                     // update
+    5000,                                                        // default
+    1000,                                                        // min
+    60000,                                                       // max
+    0                                                            // block_size
 );
+
+static MYSQL_SYSVAR_BOOL(cache_enabled, cedar_authorization_cache_enabled,
+                         PLUGIN_VAR_RQCMDARG, "Enable authorization caching",
+                         nullptr, nullptr, true);
+
+static MYSQL_SYSVAR_INT(cache_size, cedar_authorization_cache_size,
+                        PLUGIN_VAR_RQCMDARG,
+                        "Maximum number of entries in auth cache", nullptr,
+                        nullptr, 1024, 64, 100000, 0);
+
+static MYSQL_SYSVAR_INT(cache_ttl, cedar_authorization_cache_ttl,
+                        PLUGIN_VAR_RQCMDARG, "TTL for cache entries in seconds",
+                        nullptr, nullptr, 300, 1, 86400, 0);
 
 // System variables array
 static SYS_VAR *cedar_authorization_system_vars[] = {
-    MYSQL_SYSVAR(url), MYSQL_SYSVAR(namespace), MYSQL_SYSVAR(timeout), nullptr};
+    MYSQL_SYSVAR(url),
+    MYSQL_SYSVAR(namespace),
+    MYSQL_SYSVAR(timeout),
+    MYSQL_SYSVAR(cache_enabled),
+    MYSQL_SYSVAR(cache_size),
+    MYSQL_SYSVAR(cache_ttl),
+    nullptr};
 
 // Plugin declaration
 mysql_declare_plugin(cedar_authorization){
-    MYSQL_AUTHORIZATION_PLUGIN,               // type
-    &cedar_authorization_descriptor,          // descriptor
-    "cedar_authorization",                    // name
-    PLUGIN_AUTHOR_ORACLE,                     // author
-    "Cedar Authorization Plugin",             // description
-    PLUGIN_LICENSE_GPL,                       // license
-    cedar_authorization_init,                 // init function
-    nullptr,                                  // check_uninstall
-    cedar_authorization_deinit,               // deinit function
-    0x0100,                                   // version
-    nullptr,                                  // status vars
-    cedar_authorization_system_vars,          // system vars
-    nullptr,                                  // config options
-    0,                                        // flags
+    MYSQL_AUTHORIZATION_PLUGIN,       // type
+    &cedar_authorization_descriptor,  // descriptor
+    "cedar_authorization",            // name
+    PLUGIN_AUTHOR_ORACLE,             // author
+    "Cedar Authorization Plugin",     // description
+    PLUGIN_LICENSE_GPL,               // license
+    cedar_authorization_init,         // init function
+    nullptr,                          // check_uninstall
+    cedar_authorization_deinit,       // deinit function
+    0x0100,                           // version
+    nullptr,                          // status vars
+    cedar_authorization_system_vars,  // system vars
+    nullptr,                          // config options
+    0,                                // flags
 } mysql_declare_plugin_end;
 
 // No test-specific wrappers; tests include the public header and call directly
+
+void cedar_auth_cache_reset() {
+  mysql_mutex_lock(&LOCK_auth_cache);
+  auth_cache.clear();
+  mysql_mutex_unlock(&LOCK_auth_cache);
+}
+
+size_t cedar_auth_cache_size() {
+  mysql_mutex_lock(&LOCK_auth_cache);
+  size_t s = auth_cache.size();
+  mysql_mutex_unlock(&LOCK_auth_cache);
+  return s;
+}

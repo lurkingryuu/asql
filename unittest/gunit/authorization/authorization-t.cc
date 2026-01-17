@@ -27,9 +27,9 @@ class AuthorizationServerTest : public ParserTest {
 };
 
 TEST_F(AuthorizationHelpersTest, BuildCedarPayload) {
-  Json::Value payload = auth_build_cedar_payload(
-      "alice", "Table::\"db.t\"", "SELECT", "mon", 20250101, 123001,
-      "127.0.0.1");
+  Json::Value payload =
+      auth_build_cedar_payload("alice", "Table::\"db.t\"", "SELECT", "mon",
+                               20250101, 123001, "127.0.0.1");
   ASSERT_TRUE(payload.isObject());
   EXPECT_EQ(payload["principal"].asString(), "User::\"alice\"");
   EXPECT_EQ(payload["action"].asString(), "Action::\"SELECT\"");
@@ -38,8 +38,7 @@ TEST_F(AuthorizationHelpersTest, BuildCedarPayload) {
   EXPECT_EQ(payload["context"]["date"].asUInt(), 20250101U);
   EXPECT_EQ(payload["context"]["time"].asUInt(), 123001U);
   EXPECT_EQ(payload["context"]["ip"]["__extn"]["fn"].asString(), "ip");
-  EXPECT_EQ(payload["context"]["ip"]["__extn"]["arg"].asString(),
-            "127.0.0.1");
+  EXPECT_EQ(payload["context"]["ip"]["__extn"]["arg"].asString(), "127.0.0.1");
 }
 
 TEST_F(AuthorizationHelpersTest, PrivilegesPrimaryAction) {
@@ -84,10 +83,8 @@ class CedarPluginInitializedTest : public ::testing::Test {
 
 // Helper to build a minimal authorization event
 static void fill_basic_table_event(mysql_authorization_event &ev,
-                                   const char *user,
-                                   const char *db,
-                                   const char *table,
-                                   unsigned long priv_mask) {
+                                   const char *user, const char *db,
+                                   const char *table, unsigned long priv_mask) {
   memset(&ev, 0, sizeof(ev));
   ev.user.str = const_cast<char *>(user);
   ev.user.length = (unsigned long)strlen(user);
@@ -144,6 +141,55 @@ TEST_F(CedarPluginInitializedTest, PrivilegesToStringHasBrackets) {
   EXPECT_EQ(s.back(), ']');
 }
 
+TEST_F(CedarPluginInitializedTest, CacheBasicFlow) {
+  mysql_authorization_event ev{};
+  fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
+
+  // Ensure cache is empty
+  cedar_auth_cache_reset();
+  EXPECT_EQ(cedar_auth_cache_size(), 0U);
+
+  // First check - should be a miss (will return IGNORE because URL is unset)
+  auto result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_IGNORE);
+
+  // Cache should now have an entry
+  // Note: if URL is not configured, we return IGNORE (-1) which is also cached
+  EXPECT_EQ(cedar_auth_cache_size(), 1U);
+
+  // Second check - should be a hit
+  result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_IGNORE);
+  EXPECT_EQ(cedar_auth_cache_size(), 1U);
+}
+
+TEST_F(CedarPluginInitializedTest, CacheReset) {
+  mysql_authorization_event ev{};
+  fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
+
+  (void)cedar_check(&ev);
+  EXPECT_EQ(cedar_auth_cache_size(), 1U);
+
+  cedar_auth_cache_reset();
+  EXPECT_EQ(cedar_auth_cache_size(), 0U);
+}
+
+TEST_F(CedarPluginInitializedTest, CacheEviction) {
+  cedar_auth_cache_reset();
+
+  // We can't easily change the global GUC `cedar_authorization_cache_size` from
+  // here without more complex mocking, but we can verify the logic if we assume
+  // a small size or just run many insertions. For this test, let's just ensure
+  // multiple entries can coexist.
+
+  for (int i = 0; i < 5; ++i) {
+    mysql_authorization_event ev{};
+    std::string user = "alice" + std::to_string(i);
+    fill_basic_table_event(ev, user.c_str(), "test", "users", 1UL << 0);
+    (void)cedar_check(&ev);
+  }
+
+  EXPECT_EQ(cedar_auth_cache_size(), 5U);
+}
+
 }  // namespace authorization_unittest
-
-
