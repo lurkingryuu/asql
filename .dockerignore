@@ -49,7 +49,7 @@ mysql-test/var/
 mysql-test/r/
 mysql-test/rpms/
 Testing/
-unittest/gunit/
+# unittest/gunit/
 
 # Compiled binaries in extra/ directories
 extra/**/bin/

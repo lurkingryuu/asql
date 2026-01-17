@@ -1,0 +1,15 @@
+services:
+  unittest:
+    build:
+      context: .
+      dockerfile: Dockerfile.unittest
+      args:
+        PARALLEL_JOBS: ${PARALLEL_JOBS:-}
+    container_name: asql-unittest
+    volumes:
+      - .:/mysql-source:ro
+    # We mount the source as read-only but the build happens in /mysql-build inside the container
+    # This allows for faster iterations if we use a persistent build volume
+    environment:
+      - CTEST_OUTPUT_ON_FAILURE=1
+    command: ["ctest", "--output-on-failure"]

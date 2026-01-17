@@ -3,12 +3,12 @@ name: Build and Push Docker Image
 on:
   push:
     branches:
-      - fresh_start
+      - disabled
     tags:
       - 'v*'
   pull_request:
     branches:
-      - fresh_start
+      - disabled
   workflow_dispatch:
     inputs:
       platforms:
