@@ -61,13 +61,13 @@
 #define PLUGIN_SIMPLE_AUTHORIZATION_VERSION 0x0001
 
 // Helper function to get thread and process info
-static const char *get_thread_id() {
+[[maybe_unused]] static const char *get_thread_id() {
   static __thread char tid_str[32];
   snprintf(tid_str, sizeof(tid_str), "%lu", (unsigned long)pthread_self());
   return tid_str;
 }
 
-static const char *get_process_id() {
+[[maybe_unused]] static const char *get_process_id() {
   static __thread char pid_str[32];
   snprintf(pid_str, sizeof(pid_str), "%d", getpid());
   return pid_str;
@@ -82,7 +82,7 @@ static char *simple_authorization_mode = nullptr;
 static bool plugin_initialized = false;
 
 // Convert event subclass to string for logging
-static const char *event_type_to_string(
+[[maybe_unused]] static const char *event_type_to_string(
     mysql_authorization_event_subclass_t event_type) {
   switch (event_type) {
     case MYSQL_AUTHORIZATION_DB_ACCESS:
@@ -169,13 +169,17 @@ static mysql_authorization_result_t simple_authorization_check(
   mysql_authorization_result_t result = simple_authorization_logic(event);
 
   // Simple logging to error log (could be enhanced)
-  const char *result_str = (result == MYSQL_AUTHORIZATION_GRANT)  ? "GRANT"
-                           : (result == MYSQL_AUTHORIZATION_DENY) ? "DENY"
-                                                                  : "IGNORE";
+  [[maybe_unused]] const char *result_str =
+      (result == MYSQL_AUTHORIZATION_GRANT)  ? "GRANT"
+      : (result == MYSQL_AUTHORIZATION_DENY) ? "DENY"
+                                             : "IGNORE";
 
-  const char *user_str = event->user.str ? event->user.str : "unknown";
-  const char *db_str = event->database.str ? event->database.str : "unknown";
-  const char *table_str = event->table.str ? event->table.str : "";
+  [[maybe_unused]] const char *user_str =
+      event->user.str ? event->user.str : "unknown";
+  [[maybe_unused]] const char *db_str =
+      event->database.str ? event->database.str : "unknown";
+  [[maybe_unused]] const char *table_str =
+      event->table.str ? event->table.str : "";
 
   return result;
 }
@@ -185,7 +189,8 @@ static st_mysql_authorization simple_authorization_descriptor = {
     MYSQL_AUTHORIZATION_INTERFACE_VERSION, simple_authorization_check};
 
 // Plugin initialization
-static int simple_authorization_init(MYSQL_PLUGIN plugin_info) {
+static int simple_authorization_init(MYSQL_PLUGIN plugin_info
+                                     [[maybe_unused]]) {
   // Store plugin reference
   plugin_initialized = true;
   return 0;

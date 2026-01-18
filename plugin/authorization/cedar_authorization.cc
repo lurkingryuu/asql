@@ -215,7 +215,7 @@ static int check_single_privilege_cedar(
   // Create JSON payload for single privilege
   Json::Value json_payload = auth_common::auth_build_cedar_payload(
       user_uid_value, resource_identifier, privilege, day, date, fmt_time,
-      client_ip, ns);
+      fmt_ip, ns);
 
   Json::StreamWriterBuilder builder;
   std::string json_string = Json::writeString(builder, json_payload);
