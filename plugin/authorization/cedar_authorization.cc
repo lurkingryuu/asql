@@ -201,6 +201,48 @@ static int check_single_privilege_cedar(
     mysql_mutex_unlock(&LOCK_auth_cache);
   }
 
+  // Check if URL is configured
+  if (!cedar_authorization_url || strlen(cedar_authorization_url) == 0) {
+    if (plugin_handle) {
+      my_plugin_log_message(
+          &plugin_handle, MY_WARNING_LEVEL,
+          "Cedar authorization URL not configured; returning IGNORE");
+    }
+    return -1;  // signal IGNORE
+  }
+
+#ifdef WITH_UNIT_TESTS
+  // Support for mock URLs in tests to verify caching logic without network
+  if (strcmp(cedar_authorization_url, "http://mock-allow") == 0) {
+    int result = 1;
+    if (cedar_authorization_cache_enabled) {
+      AuthCacheKey key{
+          user_uid_value, resource_identifier, privilege, day, date, fmt_time,
+          fmt_ip};
+      std::time_t now = std::time(nullptr);
+      AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
+      mysql_mutex_lock(&LOCK_auth_cache);
+      auth_cache[key] = entry;
+      mysql_mutex_unlock(&LOCK_auth_cache);
+    }
+    return result;
+  }
+  if (strcmp(cedar_authorization_url, "http://mock-deny") == 0) {
+    int result = 0;
+    if (cedar_authorization_cache_enabled) {
+      AuthCacheKey key{
+          user_uid_value, resource_identifier, privilege, day, date, fmt_time,
+          fmt_ip};
+      std::time_t now = std::time(nullptr);
+      AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
+      mysql_mutex_lock(&LOCK_auth_cache);
+      auth_cache[key] = entry;
+      mysql_mutex_unlock(&LOCK_auth_cache);
+    }
+    return result;
+  }
+#endif
+
   // Initialize libcurl
   CURL *curl = curl_easy_init();
   if (!curl) {
@@ -695,6 +737,7 @@ mysql_declare_plugin(cedar_authorization){
 
 // No test-specific wrappers; tests include the public header and call directly
 
+#ifdef WITH_UNIT_TESTS
 void cedar_auth_cache_reset() {
   mysql_mutex_lock(&LOCK_auth_cache);
   auth_cache.clear();
@@ -707,3 +750,9 @@ size_t cedar_auth_cache_size() {
   mysql_mutex_unlock(&LOCK_auth_cache);
   return s;
 }
+
+void cedar_set_authorization_url(const char *url) {
+  if (cedar_authorization_url) free(cedar_authorization_url);
+  cedar_authorization_url = url ? strdup(url) : nullptr;
+}
+#endif

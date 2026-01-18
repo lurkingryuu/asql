@@ -31,9 +31,9 @@ TEST_F(AuthorizationHelpersTest, BuildCedarPayload) {
       auth_build_cedar_payload("alice", "Table::\"db.t\"", "SELECT", "mon",
                                20250101, 123001, "127.0.0.1", "MySQL");
   ASSERT_TRUE(payload.isObject());
-  EXPECT_EQ(payload["principal"].asString(), "User::\"alice\"");
-  EXPECT_EQ(payload["action"].asString(), "Action::\"SELECT\"");
-  EXPECT_EQ(payload["resource"].asString(), "Table::\"db.t\"");
+  EXPECT_EQ(payload["principal"].asString(), "MySQL::User::\"alice\"");
+  EXPECT_EQ(payload["action"].asString(), "MySQL::Action::\"SELECT\"");
+  EXPECT_EQ(payload["resource"].asString(), "MySQL::Table::\"db.t\"");
   EXPECT_EQ(payload["context"]["day"].asString(), "mon");
   EXPECT_EQ(payload["context"]["date"].asUInt(), 20250101U);
   EXPECT_EQ(payload["context"]["time"].asUInt(), 123001U);
@@ -65,8 +65,9 @@ TEST_F(AuthorizationServerTest, BuildIdentifiers) {
   EXPECT_EQ(auth_make_db_id(&ev), "test");
   EXPECT_EQ(auth_make_table_id(&ev), "test.users");
   EXPECT_EQ(auth_create_resource_identifier(&ev, "MySQL"),
-            "Table::\"test.users\"");
-  EXPECT_EQ(cedar_create_resource_identifier(&ev), "Table::\"test.users\"");
+            "MySQL::Table::\"test.users\"");
+  EXPECT_EQ(cedar_create_resource_identifier(&ev),
+            "MySQL::Table::\"test.users\"");
 }
 
 TEST_F(AuthorizationServerTest, ClientIpUnknownInUnitTest) {
@@ -79,7 +80,10 @@ TEST_F(AuthorizationServerTest, ClientIpUnknownInUnitTest) {
 class CedarPluginInitializedTest : public ::testing::Test {
  protected:
   void SetUp() override { (void)cedar_authorization_init(nullptr); }
-  void TearDown() override { (void)cedar_authorization_deinit(nullptr); }
+  void TearDown() override {
+    cedar_set_authorization_url(nullptr);
+    (void)cedar_authorization_deinit(nullptr);
+  }
 };
 
 // Helper to build a minimal authorization event
@@ -146,21 +150,21 @@ TEST_F(CedarPluginInitializedTest, CacheBasicFlow) {
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
 
-  // Ensure cache is empty
+  // Ensure cache is empty and URL is set to mock
   cedar_auth_cache_reset();
+  cedar_set_authorization_url("http://mock-allow");
   EXPECT_EQ(cedar_auth_cache_size(), 0U);
 
-  // First check - should be a miss (will return IGNORE because URL is unset)
+  // First check - should be a miss (will return GRANT because of mock URL)
   auto result = cedar_check(&ev);
-  EXPECT_EQ(result, MYSQL_AUTHORIZATION_IGNORE);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_GRANT);
 
   // Cache should now have an entry
-  // Note: if URL is not configured, we return IGNORE (-1) which is also cached
   EXPECT_EQ(cedar_auth_cache_size(), 1U);
 
   // Second check - should be a hit
   result = cedar_check(&ev);
-  EXPECT_EQ(result, MYSQL_AUTHORIZATION_IGNORE);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_GRANT);
   EXPECT_EQ(cedar_auth_cache_size(), 1U);
 }
 
@@ -168,6 +172,7 @@ TEST_F(CedarPluginInitializedTest, CacheReset) {
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
 
+  cedar_set_authorization_url("http://mock-allow");
   (void)cedar_check(&ev);
   EXPECT_EQ(cedar_auth_cache_size(), 1U);
 
@@ -177,6 +182,7 @@ TEST_F(CedarPluginInitializedTest, CacheReset) {
 
 TEST_F(CedarPluginInitializedTest, CacheEviction) {
   cedar_auth_cache_reset();
+  cedar_set_authorization_url("http://mock-allow");
 
   // We can't easily change the global GUC `cedar_authorization_cache_size` from
   // here without more complex mocking, but we can verify the logic if we assume

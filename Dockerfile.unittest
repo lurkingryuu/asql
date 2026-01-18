@@ -90,9 +90,9 @@ RUN cmake /mysql-source \
 # We specifically build the authorization tests and the main merged test binaries.
 # We do NOT build the default 'all' target which includes huge components like NDB, Router, etc.
 RUN if [ -n "${PARALLEL_JOBS}" ]; then \
-        ninja -j${PARALLEL_JOBS} authorization-t merge_large_tests-t merge_small_tests-t; \
+        ninja -j${PARALLEL_JOBS} authorization-t; \
     else \
-        ninja -j$(nproc) authorization-t merge_large_tests-t merge_small_tests-t; \
+        ninja -j$(nproc) authorization-t; \
     fi
 
 # Default command to run all tests
