@@ -87,7 +87,6 @@
 #include "sql/auth/auth_internal.h"
 #include "sql/auth/auth_utility.h"
 #include "sql/auth/dynamic_privilege_table.h"
-#include "sql/sql_authorization_plugin.h"
 #include "sql/auth/partial_revokes.h"
 #include "sql/auth/role_tables.h"
 #include "sql/auth/roles.h"
@@ -111,6 +110,7 @@
 #include "sql/sql_admin.h"  // enum role_enum
 #include "sql/sql_alter.h"
 #include "sql/sql_audit.h"
+#include "sql/sql_authorization_plugin.h"
 #include "sql/sql_base.h"  /* open_and_lock_tables */
 #include "sql/sql_class.h" /* THD */
 #include "sql/sql_connect.h"
@@ -2287,21 +2287,15 @@ bool check_access(THD *thd, Access_bitmask want_access, const char *db,
 
   // Check with authorization plugins before denying access
   mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-      thd,
-      MYSQL_AUTHORIZATION_DB_ACCESS,
-      sctx->priv_user().str,
-      sctx->priv_host().str,
-      db_name.c_str(),
-      nullptr, // table
-      nullptr, // column
-      nullptr, // routine
+      thd, MYSQL_AUTHORIZATION_DB_ACCESS, sctx->priv_user().str,
+      sctx->priv_host().str, db_name.c_str(),
+      nullptr,  // table
+      nullptr,  // column
+      nullptr,  // routine
       want_access,
-      false,   // is_procedure
-      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
-      want_access
-  );
+      false,  // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF, want_access);
 
-  
   if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
     // Plugin granted access, allow the operation
     return false;
@@ -2316,7 +2310,7 @@ bool check_access(THD *thd, Access_bitmask want_access, const char *db,
   //              (db ? db : (thd->db().str ? thd->db().str : "unknown")));
   //   goto denied;
   // }
-  
+
   // Plugin returned IGNORE, use built-in authorization (which denies access)
   if (!no_errors)
     my_error(ER_DBACCESS_DENIED_ERROR, MYF(0), sctx->priv_user().str,
@@ -2328,7 +2322,7 @@ bool check_access(THD *thd, Access_bitmask want_access, const char *db,
     Internal-priv)
   */
   DBUG_PRINT("error", ("Access denied"));
-  
+
   return true;
 }
 
@@ -2535,26 +2529,21 @@ bool is_granted_table_access(THD *thd, Access_bitmask required_acl,
     }
   }
   mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-      thd,
-      MYSQL_AUTHORIZATION_TABLE_ACCESS,
+      thd, MYSQL_AUTHORIZATION_TABLE_ACCESS,
       thd->security_context()->priv_user().str,
-      thd->security_context()->priv_host().str,
-      db_name,
-      table_name,
-      nullptr, // column
-      nullptr, // routine
+      thd->security_context()->priv_host().str, db_name, table_name,
+      nullptr,  // column
+      nullptr,  // routine
       required_acl,
-      false,   // is_procedure
-      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
-      required_acl
-  );
-  
+      false,  // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF, required_acl);
+
   if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
     DBUG_PRINT("info", ("Access granted for %s.%s by authorization plugin",
-                       db_name, table_name));
+                        db_name, table_name));
     return true;
   }
-  
+
   // permission denied
   return false;
 }
@@ -3844,26 +3833,21 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
           */
           t_ref->grant.privilege |= TMP_TABLE_ACLS;
           continue;
-        case ACL_INTERNAL_ACCESS_DENIED:
-          {
-            mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-              thd,
-              MYSQL_AUTHORIZATION_TABLE_ACCESS,
-              sctx->priv_user().str,
-              sctx->priv_host().str,
-              db_name,
-              t_ref->get_table_name(),
-              nullptr, // column
-              nullptr, // routine
-              want_access,
-              false,   // is_procedure
-              mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
-              want_access
-            );
-            if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
-              continue;
-            }
+        case ACL_INTERNAL_ACCESS_DENIED: {
+          mysql_authorization_result_t plugin_result =
+              mysql_authorization_plugin_check(
+                  thd, MYSQL_AUTHORIZATION_TABLE_ACCESS, sctx->priv_user().str,
+                  sctx->priv_host().str, db_name, t_ref->get_table_name(),
+                  nullptr,  // column
+                  nullptr,  // routine
+                  want_access,
+                  false,  // is_procedure
+                  mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+                  want_access);
+          if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
+            continue;
           }
+        }
           goto err;
         case ACL_INTERNAL_ACCESS_CHECK_GRANT:
           break;
@@ -3923,20 +3907,17 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
             ("Access denied for %s.%s. Unfulfilled access: %" PRIu32,
              t_ref->get_db_name(), t_ref->get_table_name(), want_access));
         {
-          mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-            thd,
-            MYSQL_AUTHORIZATION_TABLE_ACCESS,
-            sctx->priv_user().str,
-            sctx->priv_host().str,
-            t_ref->get_db_name(),
-            t_ref->get_table_name(),
-            nullptr, // column
-            nullptr, // routine
-            want_access,
-            false,   // is_procedure
-            mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
-            want_access
-          );
+          mysql_authorization_result_t plugin_result =
+              mysql_authorization_plugin_check(
+                  thd, MYSQL_AUTHORIZATION_TABLE_ACCESS, sctx->priv_user().str,
+                  sctx->priv_host().str, t_ref->get_db_name(),
+                  t_ref->get_table_name(),
+                  nullptr,  // column
+                  nullptr,  // routine
+                  want_access,
+                  false,  // is_procedure
+                  mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+                  want_access);
           if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
             continue;
           }
@@ -3953,7 +3934,7 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
       */
       tables_to_be_processed_further.push_back(tl);
     }  // end else
-  }    // end for
+  }  // end for
 
   if (!tables_to_be_processed_further.empty()) {
     tl = nullptr;
@@ -3981,20 +3962,17 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
                     t_ref->get_table_name()));
         want_access &= ~t_ref->grant.privilege;
         {
-          mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-            thd,
-            MYSQL_AUTHORIZATION_TABLE_ACCESS,
-            sctx->priv_user().str,
-            sctx->priv_host().str,
-            t_ref->get_db_name(),
-            t_ref->get_table_name(),
-            nullptr, // column
-            nullptr, // routine
-            want_access,
-            false,   // is_procedure
-            mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
-            want_access
-          );
+          mysql_authorization_result_t plugin_result =
+              mysql_authorization_plugin_check(
+                  thd, MYSQL_AUTHORIZATION_TABLE_ACCESS, sctx->priv_user().str,
+                  sctx->priv_host().str, t_ref->get_db_name(),
+                  t_ref->get_table_name(),
+                  nullptr,  // column
+                  nullptr,  // routine
+                  want_access,
+                  false,  // is_procedure
+                  mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+                  want_access);
           if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
             continue;
           }
@@ -4019,20 +3997,17 @@ bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
       if (want_access & ~(grant_table->cols | t_ref->grant.privilege)) {
         want_access &= ~(grant_table->cols | t_ref->grant.privilege);
         {
-          mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-            thd,
-            MYSQL_AUTHORIZATION_TABLE_ACCESS,
-            sctx->priv_user().str,
-            sctx->priv_host().str,
-            t_ref->get_db_name(),
-            t_ref->get_table_name(),
-            nullptr, // column
-            nullptr, // routine
-            want_access,
-            false,   // is_procedure
-            mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
-            want_access
-          );
+          mysql_authorization_result_t plugin_result =
+              mysql_authorization_plugin_check(
+                  thd, MYSQL_AUTHORIZATION_TABLE_ACCESS, sctx->priv_user().str,
+                  sctx->priv_host().str, t_ref->get_db_name(),
+                  t_ref->get_table_name(),
+                  nullptr,  // column
+                  nullptr,  // routine
+                  want_access,
+                  false,  // is_procedure
+                  mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
+                  want_access);
           if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
             continue;
           }
@@ -4087,15 +4062,17 @@ bool check_grant_column(THD *thd, GRANT_INFO *grant, const char *db_name,
 
   // DEBUG: Log entry into check_grant_column
   // LogEvent().prio(SYSTEM_LEVEL).message(
-  //        "DEBUG: check_grant_column called for column %s.%s.%s, want_privilege=%lu",
-  //        db_name ? db_name : "NULL", table_name ? table_name : "NULL",
-  //        name ? name : "NULL", (unsigned long)want_privilege);
+  //        "DEBUG: check_grant_column called for column %s.%s.%s,
+  //        want_privilege=%lu", db_name ? db_name : "NULL", table_name ?
+  //        table_name : "NULL", name ? name : "NULL", (unsigned
+  //        long)want_privilege);
 
   // Adjust wanted privileges based on privileges granted to table:
   want_privilege &= ~grant->privilege;
   if (!want_privilege) {
     // LogEvent().prio(SYSTEM_LEVEL).message(
-    //        "DEBUG: check_grant_column: Already checked via table privileges, returning false");
+    //        "DEBUG: check_grant_column: Already checked via table privileges,
+    //        returning false");
     return false;  // Already checked
   }
   Acl_cache_lock_guard acl_cache_lock(thd, Acl_cache_lock_mode::READ_MODE);
@@ -4131,51 +4108,48 @@ bool check_grant_column(THD *thd, GRANT_INFO *grant, const char *db_name,
     grant_column = column_hash_search(grant_table, name, length);
     if (grant_column && !(~grant_column->rights & want_privilege)) {
       // LogEvent().prio(SYSTEM_LEVEL).message(
-      //        "DEBUG: check_grant_column: Found column grant, returning false (allowed)");
+      //        "DEBUG: check_grant_column: Found column grant, returning false
+      //        (allowed)");
       return false;
     }
   }
 
 err:
   // LogEvent().prio(SYSTEM_LEVEL).message(
-  //        "DEBUG: check_grant_column: No column grant found, checking with authorization plugin for %s.%s.%s",
-  //        db_name ? db_name : "NULL", table_name ? table_name : "NULL",
-  //        name ? name : "NULL");
+  //        "DEBUG: check_grant_column: No column grant found, checking with
+  //        authorization plugin for %s.%s.%s", db_name ? db_name : "NULL",
+  //        table_name ? table_name : "NULL", name ? name : "NULL");
 
   // Check with authorization plugins before denying access
   mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-      thd,
-      MYSQL_AUTHORIZATION_COLUMN_ACCESS,
-      sctx->priv_user().str,
-      sctx->priv_host().str,
-      db_name,
-      table_name,
-      name,
-      nullptr, // routine
+      thd, MYSQL_AUTHORIZATION_COLUMN_ACCESS, sctx->priv_user().str,
+      sctx->priv_host().str, db_name, table_name, name,
+      nullptr,  // routine
       want_privilege,
-      false,   // is_procedure
-      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
-      want_privilege
-  );
+      false,  // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF, want_privilege);
 
-  const char* result_str = (plugin_result == MYSQL_AUTHORIZATION_GRANT) ? "GRANT" :
-                          (plugin_result == MYSQL_AUTHORIZATION_DENY) ? "DENY" : "IGNORE";
+  [[maybe_unused]] const char *result_str =
+      (plugin_result == MYSQL_AUTHORIZATION_GRANT)  ? "GRANT"
+      : (plugin_result == MYSQL_AUTHORIZATION_DENY) ? "DENY"
+                                                    : "IGNORE";
   // LogEvent().prio(SYSTEM_LEVEL).message(
-  //        "DEBUG: check_grant_column: Authorization plugin result: %d (%s) (0=GRANT, 1=DENY, 2=IGNORE)",
-  //        (int)plugin_result, result_str);
+  //        "DEBUG: check_grant_column: Authorization plugin result: %d (%s)
+  //        (0=GRANT, 1=DENY, 2=IGNORE)", (int)plugin_result, result_str);
 
   if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
     // LogEvent().prio(SYSTEM_LEVEL).message(
-    //        "DEBUG: check_grant_column: Plugin granted access, returning false (allowed)");
+    //        "DEBUG: check_grant_column: Plugin granted access, returning false
+    //        (allowed)");
     return false;
   }
 
   char command[128];
   get_privilege_desc(command, sizeof(command), want_privilege);
   // LogEvent().prio(SYSTEM_LEVEL).message(
-  //        "DEBUG: check_grant_column: Denying access to column %s.%s.%s, command=%s",
-  //        db_name ? db_name : "NULL", table_name ? table_name : "NULL",
-  //        name ? name : "NULL", command);
+  //        "DEBUG: check_grant_column: Denying access to column %s.%s.%s,
+  //        command=%s", db_name ? db_name : "NULL", table_name ? table_name :
+  //        "NULL", name ? name : "NULL", command);
   my_error(ER_COLUMNACCESS_DENIED_ERROR, MYF(0), command, sctx->priv_user().str,
            sctx->host_or_ip().str, name, table_name);
   return true;
@@ -4219,9 +4193,10 @@ bool check_column_grant_in_table_ref(THD *thd, Table_ref *table_ref,
   assert(want_privilege);
 
   // LogEvent().prio(SYSTEM_LEVEL).message(
-  //        "DEBUG: check_column_grant_in_table_ref called for column %s, want_privilege=%lu, table=%s",
-  //        name ? name : "NULL", (unsigned long)want_privilege,
-  //        table_ref->table_name ? table_ref->table_name : "NULL");
+  //        "DEBUG: check_column_grant_in_table_ref called for column %s,
+  //        want_privilege=%lu, table=%s", name ? name : "NULL", (unsigned
+  //        long)want_privilege, table_ref->table_name ? table_ref->table_name :
+  //        "NULL");
 
   if (is_temporary_table(table_ref) || table_ref->is_internal() ||
       table_ref->schema_table) {
@@ -4267,14 +4242,13 @@ bool check_column_grant_in_table_ref(THD *thd, Table_ref *table_ref,
            strcmp(table_name, table_ref->table->s->table_name.str) == 0);
   }
 
-  bool result = check_grant_column(thd, grant, db_name, table_name, name, length, sctx,
-                                   want_privilege);
+  bool result = check_grant_column(thd, grant, db_name, table_name, name,
+                                   length, sctx, want_privilege);
   // LogEvent().prio(SYSTEM_LEVEL).message(
-  //        "DEBUG: check_column_grant_in_table_ref: check_grant_column returned %d for %s.%s.%s",
-  //        result ? 1 : 0, db_name ? db_name : "NULL", table_name ? table_name : "NULL",
-  //        name ? name : "NULL");
-  if (result)
-    return true;
+  //        "DEBUG: check_column_grant_in_table_ref: check_grant_column returned
+  //        %d for %s.%s.%s", result ? 1 : 0, db_name ? db_name : "NULL",
+  //        table_name ? table_name : "NULL", name ? name : "NULL");
+  if (result) return true;
   return false;
 }
 
@@ -4368,26 +4342,18 @@ bool check_grant_all_columns(THD *thd, Access_bitmask want_access_arg,
   }  // next field
   return false;
 
-err:
-  {
-    mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-      thd,
-      MYSQL_AUTHORIZATION_COLUMN_ACCESS,
-      sctx->priv_user().str,
-      sctx->priv_host().str,
-      db_name,
-      table_name,
-      field_name,
-      nullptr, // routine
+err: {
+  mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
+      thd, MYSQL_AUTHORIZATION_COLUMN_ACCESS, sctx->priv_user().str,
+      sctx->priv_host().str, db_name, table_name, field_name,
+      nullptr,  // routine
       want_access,
-      false,   // is_procedure
-      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF,
-      want_access
-    );
-    if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
-      return false;
-    }
+      false,  // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF, want_access);
+  if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
+    return false;
   }
+}
 
   char command[128];
   get_privilege_desc(command, sizeof(command), want_access);
@@ -4497,20 +4463,16 @@ bool check_grant_db(THD *thd, const char *db,
   }
 
   if (error) {
-    mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-      thd,
-      MYSQL_AUTHORIZATION_DB_ACCESS,
-      priv_user.str,
-      sctx->priv_host().str,
-      db,
-      nullptr, // table
-      nullptr, // column
-      nullptr, // routine
-      DB_ACLS,
-      false,   // is_procedure
-      mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE,
-      0
-    );
+    mysql_authorization_result_t plugin_result =
+        mysql_authorization_plugin_check(
+            thd, MYSQL_AUTHORIZATION_DB_ACCESS, priv_user.str,
+            sctx->priv_host().str, db,
+            nullptr,  // table
+            nullptr,  // column
+            nullptr,  // routine
+            DB_ACLS,
+            false,  // is_procedure
+            mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE, 0);
     if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
       error = false;
     }
@@ -4638,22 +4600,17 @@ static bool check_routine_level_acl(THD *thd, const char *db, const char *name,
            routine_hash_search(sctx->priv_host().str, sctx->ip().str, db,
                                sctx->priv_user().str, name, is_proc, false)))
     no_routine_acl = !(grant_proc->privs & SHOW_PROC_ACLS);
-  
+
   if (no_routine_acl) {
-    mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-      thd,
-      MYSQL_AUTHORIZATION_ROUTINE_ACCESS,
-      sctx->priv_user().str,
-      sctx->priv_host().str,
-      db,
-      name,
-      nullptr, // column
-      nullptr, // routine
-      SHOW_PROC_ACLS,
-      false,   // is_procedure
-      mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE,
-      0
-    );
+    mysql_authorization_result_t plugin_result =
+        mysql_authorization_plugin_check(
+            thd, MYSQL_AUTHORIZATION_ROUTINE_ACCESS, sctx->priv_user().str,
+            sctx->priv_host().str, db, name,
+            nullptr,  // column
+            nullptr,  // routine
+            SHOW_PROC_ACLS,
+            false,  // is_procedure
+            mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE, 0);
     if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
       no_routine_acl = false;
     }
@@ -5017,8 +4974,8 @@ void get_privilege_access_maps(
         }
 
       }  // end for
-    }    // if user_vertex_it != g_authid_to_vertex->end()
-  }      // if has_granted_roles
+    }  // if user_vertex_it != g_authid_to_vertex->end()
+  }  // if has_granted_roles
   DBUG_PRINT("info", ("Global access for role user %s@%s is %" PRIu32,
                       acl_user->user, acl_user->host.get_host(), *access));
 }
@@ -6155,19 +6112,16 @@ bool check_global_access(THD *thd, Access_bitmask want_access) {
           want_access, thd->db().str ? thd->db().str : "", true))
     return false;
   mysql_authorization_result_t plugin_result = mysql_authorization_plugin_check(
-      thd,
-      MYSQL_AUTHORIZATION_DB_ACCESS,
+      thd, MYSQL_AUTHORIZATION_DB_ACCESS,
       thd->security_context()->priv_user().str,
       thd->security_context()->priv_host().str,
-      thd->db().str ? thd->db().str : "", // db
-      nullptr, // table
-      nullptr, // column
-      nullptr, // routine
+      thd->db().str ? thd->db().str : "",  // db
+      nullptr,                             // table
+      nullptr,                             // column
+      nullptr,                             // routine
       want_access,
-      false,   // is_procedure
-      mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF,
-      want_access
-  );
+      false,  // is_procedure
+      mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF, want_access);
   if (plugin_result == MYSQL_AUTHORIZATION_GRANT) {
     return false;
   }

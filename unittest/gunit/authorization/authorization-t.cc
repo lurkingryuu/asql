@@ -29,7 +29,7 @@ class AuthorizationServerTest : public ParserTest {
 TEST_F(AuthorizationHelpersTest, BuildCedarPayload) {
   Json::Value payload =
       auth_build_cedar_payload("alice", "Table::\"db.t\"", "SELECT", "mon",
-                               20250101, 123001, "127.0.0.1");
+                               20250101, 123001, "127.0.0.1", "MySQL");
   ASSERT_TRUE(payload.isObject());
   EXPECT_EQ(payload["principal"].asString(), "User::\"alice\"");
   EXPECT_EQ(payload["action"].asString(), "Action::\"SELECT\"");
@@ -64,7 +64,8 @@ TEST_F(AuthorizationServerTest, BuildIdentifiers) {
   EXPECT_EQ(auth_build_user_uid(&ev), "alice");
   EXPECT_EQ(auth_make_db_id(&ev), "test");
   EXPECT_EQ(auth_make_table_id(&ev), "test.users");
-  EXPECT_EQ(auth_create_resource_identifier(&ev), "Table::\"test.users\"");
+  EXPECT_EQ(auth_create_resource_identifier(&ev, "MySQL"),
+            "Table::\"test.users\"");
   EXPECT_EQ(cedar_create_resource_identifier(&ev), "Table::\"test.users\"");
 }
 
