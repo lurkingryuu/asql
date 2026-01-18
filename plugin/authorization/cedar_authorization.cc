@@ -115,6 +115,28 @@ static int cedar_authorization_cache_ttl = 300;  // seconds
 #include <mutex>
 #include <unordered_map>
 
+// Cache structures
+struct AuthCacheKey {
+  std::string user;
+  std::string resource;
+  std::string action;
+  std::string day;
+  uint32_t date;
+  uint32_t time;
+  std::string ip;
+
+  bool operator==(const AuthCacheKey &other) const {
+    return user == other.user && resource == other.resource &&
+           action == other.action && day == other.day && date == other.date &&
+           time == other.time && ip == other.ip;
+  }
+};
+
+struct AuthCacheEntry {
+  int result;  // -1 (IGNORE), 0 (DENY), 1 (GRANT)
+  std::time_t expires;
+};
+
 struct AuthCacheKeyHash {
   std::size_t operator()(const AuthCacheKey &k) const {
     size_t h = std::hash<std::string>{}(k.user);
@@ -151,6 +173,7 @@ static size_t WriteCallback(void *contents, size_t size, size_t nmemb,
   return total_size;
 }
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 // Convert privileges bitmask to string for logging
 std::string privileges_to_string(unsigned long privileges) {
   std::ostringstream oss;
@@ -166,6 +189,7 @@ std::string privileges_to_string(unsigned long privileges) {
 
   return "[" + oss.str() + "]";
 }
+#endif
 
 // Use shared helpers from authorization_common for JSON and mapping
 
@@ -382,8 +406,8 @@ static int check_single_privilege_cedar(
   return result;
 }
 
-// Check access using Cedar authorization service
-int cedar_check_access_core(const mysql_authorization_event *event) {
+// Access check core returns -1 (IGNORE), 0 (DENY), 1 (GRANT for all privs)
+static int cedar_check_access_core(const mysql_authorization_event *event) {
   if (plugin_handle) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
@@ -504,13 +528,15 @@ int cedar_check_access_core(const mysql_authorization_event *event) {
   }
 }
 
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 // Create resource identifier based on event type (exposed for tests)
 std::string cedar_create_resource_identifier(
     const mysql_authorization_event *event) {
   std::string ns =
-      cedar_authorization_namespace ? cedar_authorization_namespace : "";
+      cedar_authorization_namespace ? cedar_authorization_namespace : "MySQL";
   return auth_common::auth_create_resource_identifier(event, ns);
 }
+#endif
 
 // Main authorization callback function
 mysql_authorization_result_t cedar_check(
