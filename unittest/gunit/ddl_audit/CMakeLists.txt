@@ -23,6 +23,8 @@
 
 # Unit tests for ddl_audit plugin helper functions
 
+ADD_DEFINITIONS(-DEXTRA_CODE_FOR_UNIT_TESTING)
+
 MYSQL_ADD_EXECUTABLE(ddl_audit-t
   ddl_audit-t.cc
   ${CMAKE_SOURCE_DIR}/plugin/ddl_audit/ddl_audit.cc

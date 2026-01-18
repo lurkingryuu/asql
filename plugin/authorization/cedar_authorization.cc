@@ -472,61 +472,146 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
   // Check each privilege individually with Cedar
   // We need to make separate requests for each privilege since Cedar only
   // handles one action per request
-  bool all_privileges_allowed = true;
 
+  // Static list of standard MySQL privileges
+  static const std::pair<const char *, int> kStandardPrivileges[] = {
+      {"SELECT", 0},
+      {"INSERT", 1},
+      {"UPDATE", 2},
+      {"DELETE", 3},
+      {"CREATE", 4},
+      {"DROP", 5},
+      {"RELOAD", 6},
+      {"SHUTDOWN", 7},
+      {"PROCESS", 8},
+      {"FILE", 9},
+      {"GRANT", 10},
+      {"REFERENCES", 11},
+      {"INDEX", 12},
+      {"ALTER", 13},
+      {"SHOW DATABASES", 14},
+      {"SUPER", 15},
+      {"CREATE TEMPORARY TABLES", 16},
+      {"LOCK TABLES", 17},
+      {"EXECUTE", 18},
+      {"REPLICATION SLAVE", 19},
+      {"REPLICATION CLIENT", 20},
+      {"CREATE VIEW", 21},
+      {"SHOW VIEW", 22},
+      {"CREATE ROUTINE", 23},
+      {"ALTER ROUTINE", 24},
+      {"CREATE USER", 25},
+      {"EVENT", 26},
+      {"TRIGGER", 27},
+      {"CREATE TABLESPACE", 28},
+      {"CREATE ROLE", 29},
+      {"DROP ROLE", 30}};
+
+  // Collect all privileges that need to be checked
+  std::vector<std::pair<std::string, int>> privs_to_check;
+
+  // 1. Standard privileges
+  for (const auto &p : kStandardPrivileges) {
+    if (event->privileges & (1UL << p.second)) {
+      privs_to_check.push_back({p.first, p.second});
+    }
+  }
+
+  // 2. Extra privileges from map
   for (const auto &[privilege, offset] : privs::global_acls_map) {
-    if (event->privileges & (1 << offset)) {
-      if (plugin_handle) {
-        my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                              "Checking Cedar authorization for privilege: %s",
-                              privilege.c_str());
+    if (event->privileges & (1UL << offset)) {
+      // Avoid duplicates if standard privs are also in the map (unlikely but
+      // safe)
+      bool exists = false;
+      for (const auto &existing : privs_to_check) {
+        if (existing.second == offset) {
+          exists = true;
+          break;
+        }
       }
-
-      // Make individual Cedar request for this privilege
-      int privilege_result = check_single_privilege_cedar(
-          user_uid_value, resource_identifier, privilege, day, date, fmt_time,
-          client_ip, ns);
-
-      if (privilege_result == -1) {
-        // Error occurred, return IGNORE
-        if (plugin_handle) {
-          my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
-                                "Cedar authorization error for privilege: %s",
-                                privilege.c_str());
-        }
-        return -1;  // Signal IGNORE
-      } else if (privilege_result == 0) {
-        // This privilege was denied
-        all_privileges_allowed = false;
-        if (plugin_handle) {
-          my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                                "Cedar denied privilege: %s",
-                                privilege.c_str());
-        }
-        // Continue checking other privileges to log all denials
-      } else {
-        // This privilege was allowed
-        if (plugin_handle) {
-          my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                                "Cedar allowed privilege: %s",
-                                privilege.c_str());
-        }
+      if (!exists) {
+        privs_to_check.push_back({privilege, offset});
       }
     }
   }
 
-  if (all_privileges_allowed) {
+  bool is_any_of = (event->requirement_mode ==
+                    mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF);
+  bool authorized = !is_any_of;  // Default true for ALL_OF, false for ANY_OF
+
+  bool any_implied = false;  // Track if we checked any privilege
+
+  for (const auto &p : privs_to_check) {
+    const std::string &privilege = p.first;
+
+    any_implied = true;
     if (plugin_handle) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                            "Cedar authorization: All privileges allowed");
+                            "Checking Cedar authorization for privilege: %s",
+                            privilege.c_str());
     }
-    return 1;  // All privileges allowed
+
+    // Make individual Cedar request for this privilege
+    int privilege_result = check_single_privilege_cedar(
+        user_uid_value, resource_identifier, privilege, day, date, fmt_time,
+        client_ip, ns);
+
+    if (privilege_result == -1) {
+      // Error occurred, return IGNORE
+      if (plugin_handle) {
+        my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
+                              "Cedar authorization error for privilege: %s",
+                              privilege.c_str());
+      }
+      return -1;  // Signal IGNORE
+    }
+
+    if (is_any_of) {
+      if (privilege_result == 1) {
+        // ANY_OF: One success is enough
+        authorized = true;
+        if (plugin_handle) {
+          my_plugin_log_message(
+              &plugin_handle, MY_INFORMATION_LEVEL,
+              "Cedar allowed privilege %s in ANY_OF mode -> GRANT",
+              privilege.c_str());
+        }
+        break;
+      }
+    } else {
+      // ALL_OF: One failure is enough to fail
+      if (privilege_result == 0) {
+        authorized = false;
+        if (plugin_handle) {
+          my_plugin_log_message(
+              &plugin_handle, MY_INFORMATION_LEVEL,
+              "Cedar denied privilege %s in ALL_OF mode -> DENY",
+              privilege.c_str());
+        }
+        // We could break here, but logging all denials might be useful.
+        // For performance, let's break.
+        break;
+      }
+    }
+  }
+  if (!any_implied) {
+    // No privileges checked? Should be GRANT (handled by zero-priv check
+    // earlier usually)
+    return 1;
+  }
+
+  if (authorized) {
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Cedar authorization: Access GRANTED");
+    }
+    return 1;
   } else {
     if (plugin_handle) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                            "Cedar authorization: Some privileges denied");
+                            "Cedar authorization: Access DENIED");
     }
-    return 0;  // Some privileges denied
+    return 0;
   }
 }
 

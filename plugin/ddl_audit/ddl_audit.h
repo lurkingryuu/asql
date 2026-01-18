@@ -25,8 +25,8 @@
 #define PLUGIN_DDL_AUDIT_INCLUDED
 
 #include <string>
-#include <vector>
 #include <utility>
+#include <vector>
 
 // Ensure MYSQL_THD and THD are available to this header's declarations, while
 // avoiding hard dependency on MySQL include search paths for standalone lints.
@@ -55,7 +55,7 @@ bool is_ddl_command(int sql_command_id);
 
   @return String name of the command (e.g., "CREATE_TABLE")
 */
-const char* get_command_name(int sql_command_id);
+const char *get_command_name(int sql_command_id);
 
 // Note: Non-LEX parsing helpers have been removed. Use LEX-based helpers below.
 
@@ -72,7 +72,7 @@ const char* get_command_name(int sql_command_id);
   @return User UID string
 */
 std::string make_user_uid(const std::string &user, const std::string &host,
-                         const std::string &ns = "");
+                          const std::string &ns = "");
 
 /**
   Generate a unique identifier for a database entity.
@@ -96,7 +96,7 @@ std::string make_db_uid(const std::string &db, const std::string &ns = "");
   @return Table UID string (format: "db.table")
 */
 std::string make_table_uid(const std::string &db, const std::string &table,
-                          const std::string &ns = "");
+                           const std::string &ns = "");
 
 /**
   Extract database name from LEX structure.
@@ -115,8 +115,9 @@ std::string extract_database_name_from_lex(MYSQL_THD thd, int sql_command_id);
   @param sql_command_id SQL command ID
   @param users          Output vector for user/host pairs
 */
-void extract_users_from_lex(MYSQL_THD thd, int sql_command_id,
-                           std::vector<std::pair<std::string, std::string>>& users);
+void extract_users_from_lex(
+    MYSQL_THD thd, int sql_command_id,
+    std::vector<std::pair<std::string, std::string>> &users);
 
 /**
   Extract table information from LEX structure.
@@ -127,7 +128,7 @@ void extract_users_from_lex(MYSQL_THD thd, int sql_command_id,
   @param out_table      Output table name
 */
 void extract_table_from_lex(MYSQL_THD thd, int sql_command_id,
-                           std::string &out_db, std::string &out_table);
+                            std::string &out_db, std::string &out_table);
 
 /**
   Get current timestamp in ISO 8601 format.
@@ -145,5 +146,34 @@ std::string get_current_timestamp();
 */
 std::string get_client_ip(MYSQL_THD thd);
 
-#endif  // PLUGIN_DDL_AUDIT_INCLUDED
+/**
+  Extract rename table pairs from LEX structure.
 
+  For RENAME TABLE statements, extracts source and destination table pairs.
+
+  @param thd            MySQL thread context
+  @param sql_command_id SQL command ID
+  @param tables         Output vector of pairs (source, destination)
+                                      Each element is a pair of (db, table)
+*/
+void extract_rename_tables_from_lex(
+    MYSQL_THD thd, int sql_command_id,
+    std::vector<std::pair<std::pair<std::string, std::string>,
+                          std::pair<std::string, std::string>>> &tables);
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+// Test helper structures
+struct MockCedarCall {
+  std::string action;  // "upsert" or "delete"
+  std::string entity_type;
+  std::string entity_id;
+  std::string ns;
+};
+
+// Test helper functions
+void ddl_audit_test_reset();
+const std::vector<MockCedarCall> &ddl_audit_test_get_calls();
+void ddl_audit_test_set_mock_url(const char *url);
+#endif
+
+#endif  // PLUGIN_DDL_AUDIT_INCLUDED

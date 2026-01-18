@@ -199,4 +199,62 @@ TEST_F(CedarPluginInitializedTest, CacheEviction) {
   EXPECT_EQ(cedar_auth_cache_size(), 5U);
 }
 
+TEST_F(CedarPluginInitializedTest, DenyFlow) {
+  mysql_authorization_event ev{};
+  fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
+
+  cedar_set_authorization_url("http://mock-deny");
+
+  auto result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_DENY);
+}
+
+TEST_F(CedarPluginInitializedTest, AnyOfRequirement) {
+  // Test ANY_OF where we have multiple privileges
+  // We'll mock one "Allow" and logic usually requires us to just have ONE
+  // allow. However, our simple mock "http://mock-allow" allows ALL, and
+  // "http://mock-deny" denies ALL. We can't easily test mixed results without a
+  // more complex mock in C++ code or by extending the mock-url parsing. For
+  // now, let's test that ANY_OF with mock-allow returns GRANT.
+
+  mysql_authorization_event ev{};
+  fill_basic_table_event(ev, "alice", "test", "users",
+                         (1UL << 0) | (1UL << 2));  // SELECT | UPDATE
+  ev.requirement_mode = mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF;
+
+  cedar_set_authorization_url("http://mock-allow");
+  auto result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_GRANT);
+
+  // Test ANY_OF with mock-deny returns DENY
+  // Use cache reset to ensure we don't hit the cache from the previous Allow
+  // check
+  cedar_auth_cache_reset();
+  cedar_set_authorization_url("http://mock-deny");
+  result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_DENY);
+}
+
+TEST_F(CedarPluginInitializedTest, ServerErrorReturnsIgnore) {
+  // We don't have a "mock-error" URL handler in the C++ code yet,
+  // checking `cedar_authorization.cc`'s `check_single_privilege_cedar` function
+  // for EXTRA_CODE_FOR_UNIT_TESTING. It only handles "mock-allow" and
+  // "mock-deny". Everything else falls through to real curl. In unit test
+  // environment, real curl to invalid URL should fail and return 0 (IGNORE -
+  // mapped to -1 in core).
+
+  mysql_authorization_event ev{};
+  fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
+
+  cedar_set_authorization_url("http://invalid-url-should-fail");
+
+  // The code returns -1 for error, which `cedar_check` maps to
+  // MYSQL_AUTHORIZATION_IGNORE
+  auto result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_IGNORE);
+}
+
+// TODO: Add complex ANY_OF mixed test when mock infrastructure supports
+// fine-grained control
+
 }  // namespace authorization_unittest

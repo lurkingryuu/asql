@@ -525,6 +525,106 @@ TEST_F(DDL_audit_server_test, ComplexDDLExtraction) {
   EXPECT_EQ(users[2].second, "%");
 }
 
+TEST_F(DDL_audit_server_test, RenameTableLogic) {
+  // Clear any previous calls
+  ddl_audit_test_reset();
+
+  // Create a fake RENAME statement
+  // We need to construct a scenario where extract_rename_tables_from_lex works
+  // This is tricky with ParserTest as we need the full LEX populated correctly
+  // for RENAME
+
+  THD *thd = parse_query("RENAME TABLE db1.t1 TO db2.t2, t3 TO t4");
+
+  std::vector<std::pair<std::pair<std::string, std::string>,
+                        std::pair<std::string, std::string>>>
+      tables;
+
+  extract_rename_tables_from_lex(thd, SQLCOM_RENAME_TABLE, tables);
+
+  ASSERT_EQ(tables.size(), 2);
+
+  // First pair: db1.t1 -> db2.t2
+  EXPECT_EQ(tables[0].first.first, "db1");
+  EXPECT_EQ(tables[0].first.second, "t1");
+  EXPECT_EQ(tables[0].second.first, "db2");
+  EXPECT_EQ(tables[0].second.second, "t2");
+
+  // Second pair: t3 -> t4 (uses current db from THD, which might be default or
+  // empty) In ParserTest default DB is usually empty unless set Let's assume
+  // empty for now or check what thd->db() is. Actually table extraction falls
+  // back to thd->db() if db part is empty.
+
+  EXPECT_EQ(tables[1].first.second, "t3");
+  EXPECT_EQ(tables[1].second.second, "t4");
+
+  // Now verify the actual event handling logic triggers the right Cedar calls
+  // We need to simulate the event
+  mysql_event_query ev{};
+  ev.event_subclass = MYSQL_AUDIT_QUERY_STATUS_END;
+  ev.sql_command_id = SQLCOM_RENAME_TABLE;
+  ev.query.str = (const char *)"RENAME TABLE ...";  // content doesn't matter
+                                                    // for logic, LEX does
+  ev.query.length = 16;
+
+  // We need to ensure the plugin sees the THD with our LEX
+  // handle_query_event takes THD
+
+  // ddl_audit_notify calls handle_query_event
+  // We'll call ddl_audit_notify directly with our THD
+
+  // Ensure plugin is "installed" state for the test
+  ddl_audit_plugin_init(nullptr);
+  ddl_audit_test_reset();
+
+  ddl_audit_notify(thd, MYSQL_AUDIT_QUERY_CLASS, &ev);
+
+  const auto &calls = ddl_audit_test_get_calls();
+  // We expect:
+  // Pair 1: delete db1.t1, upsert db2.t2, upsert Database db2
+  // Pair 2: delete t3, upsert t4
+  // Plus potentially "Database" upserts for the new DBs
+
+  // Verify calls exist
+  ASSERT_GE(calls.size(), 4);
+
+  // Verify specific sequence or existence
+  bool found_delete_t1 = false;
+  bool found_upsert_t2 = false;
+  bool found_delete_t3 = false;
+  bool found_upsert_t4 = false;
+
+  for (const auto &call : calls) {
+    if (call.action == "delete" && call.entity_type == "Table" &&
+        call.entity_id == "db1.t1")
+      found_delete_t1 = true;
+    if (call.action == "upsert" && call.entity_type == "Table" &&
+        call.entity_id == "db2.t2")
+      found_upsert_t2 = true;
+
+    // For t3/t4, the DB part depends on thd->db(). If it's empty/null, it might
+    // just be the table name header checks. In extracted logic: src.first =
+    // (src_db && src_db[0]) ? src_db : (thd->db().str ? ... : ""); if empty, id
+    // is just table name. So check for "t3" and "t4" or ".t3" ".t4"?
+    // make_table_uid: if (!db.empty() && !table.empty()) table_id = db + "." +
+    // table; else ... table_id = table; So it should be just "t3" and "t4".
+
+    if (call.action == "delete" && call.entity_type == "Table" &&
+        (call.entity_id == "t3" || call.entity_id == ".t3"))
+      found_delete_t3 = true;
+    if (call.action == "upsert" && call.entity_type == "Table" &&
+        (call.entity_id == "t4" || call.entity_id == ".t4"))
+      found_upsert_t4 = true;
+  }
+
+  EXPECT_TRUE(found_delete_t1) << "Should delete old table db1.t1";
+  EXPECT_TRUE(found_upsert_t2) << "Should upsert new table db2.t2";
+  EXPECT_TRUE(found_delete_t3) << "Should delete old table t3";
+  EXPECT_TRUE(found_upsert_t4) << "Should upsert new table t4";
+
+  ddl_audit_plugin_deinit(nullptr);
+}
+
 // ===== Additional function coverage tests =====
 
 TEST_F(DDL_audit_server_test, CreateDDLData_PopulatesFields) {
