@@ -67,19 +67,22 @@ const char* get_command_name(int sql_command_id);
 
   @param user  Username
   @param host  Hostname (not included in UID per plugin design)
+  @param ns    Namespace prefix (optional)
 
   @return User UID string
 */
-std::string make_user_uid(const std::string &user, const std::string &host);
+std::string make_user_uid(const std::string &user, const std::string &host,
+                         const std::string &ns = "");
 
 /**
   Generate a unique identifier for a database entity.
 
   @param db  Database name
+  @param ns  Namespace prefix (optional)
 
   @return Database UID string
 */
-std::string make_db_uid(const std::string &db);
+std::string make_db_uid(const std::string &db, const std::string &ns = "");
 
 /**
   Generate a unique identifier for a table entity.
@@ -88,10 +91,12 @@ std::string make_db_uid(const std::string &db);
 
   @param db     Database name
   @param table  Table name
+  @param ns     Namespace prefix (optional)
 
   @return Table UID string (format: "db.table")
 */
-std::string make_table_uid(const std::string &db, const std::string &table);
+std::string make_table_uid(const std::string &db, const std::string &table,
+                          const std::string &ns = "");
 
 /**
   Extract database name from LEX structure.
