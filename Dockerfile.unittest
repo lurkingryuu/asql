@@ -72,27 +72,23 @@ COPY doxygen_resources/ doxygen_resources/
 WORKDIR /mysql-build
 
 # Configure for unittests
+# Use RelWithDebInfo to reduce build artifacts size (Debug is too huge for some Docker environments)
 RUN cmake /mysql-source \
-    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_PREFIX=/usr/local/mysql \
     -DDOWNLOAD_BOOST=0 \
     -DWITH_BOOST=/tmp/boost \
     -DWITH_UNIT_TESTS=ON \
-    -DWITH_DEBUG=ON \
+    -DWITH_DEBUG=OFF \
     -DENABLED_LOCAL_INFILE=1 \
     -DMYSQL_DATADIR=/var/lib/mysql \
     -DSYSCONFDIR=/etc/mysql \
     -DWITH_SSL=system \
     -G Ninja
 
-# Build the project (including unittests that are not excluded from all)
-RUN if [ -n "${PARALLEL_JOBS}" ]; then \
-        ninja -j${PARALLEL_JOBS}; \
-    else \
-        ninja -j$(nproc); \
-    fi
-
-# Explicitly build the merge tests and authorization tests just in case
+# Build only the components needed for unittests to save time and disk space
+# We specifically build the authorization tests and the main merged test binaries.
+# We do NOT build the default 'all' target which includes huge components like NDB, Router, etc.
 RUN if [ -n "${PARALLEL_JOBS}" ]; then \
         ninja -j${PARALLEL_JOBS} authorization-t merge_large_tests-t merge_small_tests-t; \
     else \
