@@ -1,5 +1,7 @@
 # Unit tests for authorization plugin helpers and cedar plugin non-network logic
 
+ADD_DEFINITIONS(-DEXTRA_CODE_FOR_UNIT_TESTING)
+
 MYSQL_ADD_EXECUTABLE(authorization-t
   authorization-t.cc
   ${CMAKE_SOURCE_DIR}/plugin/authorization/authorization_common.cc
