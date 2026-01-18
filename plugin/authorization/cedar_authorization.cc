@@ -211,7 +211,7 @@ static int check_single_privilege_cedar(
     return -1;  // signal IGNORE
   }
 
-#ifdef WITH_UNIT_TESTS
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
   // Support for mock URLs in tests to verify caching logic without network
   if (strcmp(cedar_authorization_url, "http://mock-allow") == 0) {
     int result = 1;
@@ -737,7 +737,7 @@ mysql_declare_plugin(cedar_authorization){
 
 // No test-specific wrappers; tests include the public header and call directly
 
-#ifdef WITH_UNIT_TESTS
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 void cedar_auth_cache_reset() {
   mysql_mutex_lock(&LOCK_auth_cache);
   auth_cache.clear();

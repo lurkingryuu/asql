@@ -60,7 +60,7 @@ std::string privileges_to_string(unsigned long privileges);
 int cedar_authorization_init(MYSQL_PLUGIN plugin_info);
 int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info);
 
-#ifdef WITH_UNIT_TESTS
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
 // Cache management for tests
 void cedar_auth_cache_reset();
 size_t cedar_auth_cache_size();
