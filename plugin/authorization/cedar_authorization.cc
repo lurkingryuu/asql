@@ -110,6 +110,7 @@ static int cedar_authorization_timeout = 5000;  // milliseconds
 static bool cedar_authorization_cache_enabled = true;
 static int cedar_authorization_cache_size = 1024;
 static int cedar_authorization_cache_ttl = 300;  // seconds
+static bool cedar_authorization_cache_flush = false;
 
 // Cache implementation
 #include <mutex>
@@ -441,11 +442,12 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
   // Build principal UID (user only)
   std::string user_uid_value = auth_common::auth_build_user_uid(event);
 
-  // Create resource identifier
+  // Create resource identifier (without namespace - auth_build_cedar_payload
+  // adds it)
   std::string ns =
       cedar_authorization_namespace ? cedar_authorization_namespace : "MySQL";
   std::string resource_identifier =
-      auth_common::auth_create_resource_identifier(event, ns);
+      auth_common::auth_create_resource_identifier(event, "");
 
   if (plugin_handle) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -733,15 +735,38 @@ static MYSQL_SYSVAR_INT(cache_ttl, cedar_authorization_cache_ttl,
                         PLUGIN_VAR_RQCMDARG, "TTL for cache entries in seconds",
                         nullptr, nullptr, 300, 1, 86400, 0);
 
+// Cache flush update callback
+static void cedar_authorization_cache_flush_update(
+    MYSQL_THD thd [[maybe_unused]], SYS_VAR *var [[maybe_unused]],
+    void *var_ptr [[maybe_unused]], const void *save) {
+  bool new_val = *static_cast<const bool *>(save);
+  if (new_val) {
+    // Flush the cache
+    mysql_mutex_lock(&LOCK_auth_cache);
+    auth_cache.clear();
+    mysql_mutex_unlock(&LOCK_auth_cache);
+
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Authorization cache flushed");
+    }
+
+    // Reset the variable to false
+    cedar_authorization_cache_flush = false;
+  }
+}
+
+static MYSQL_SYSVAR_BOOL(
+    cache_flush, cedar_authorization_cache_flush, PLUGIN_VAR_RQCMDARG,
+    "Flush the authorization cache (automatically resets to 0)", nullptr,
+    cedar_authorization_cache_flush_update, false);
+
 // System variables array
 static SYS_VAR *cedar_authorization_system_vars[] = {
-    MYSQL_SYSVAR(url),
-    MYSQL_SYSVAR(namespace),
-    MYSQL_SYSVAR(timeout),
-    MYSQL_SYSVAR(cache_enabled),
-    MYSQL_SYSVAR(cache_size),
-    MYSQL_SYSVAR(cache_ttl),
-    nullptr};
+    MYSQL_SYSVAR(url),         MYSQL_SYSVAR(namespace),
+    MYSQL_SYSVAR(timeout),     MYSQL_SYSVAR(cache_enabled),
+    MYSQL_SYSVAR(cache_size),  MYSQL_SYSVAR(cache_ttl),
+    MYSQL_SYSVAR(cache_flush), nullptr};
 
 // Plugin declaration
 mysql_declare_plugin(cedar_authorization){
@@ -780,5 +805,9 @@ size_t cedar_auth_cache_size() {
 void cedar_set_authorization_url(const char *url) {
   if (cedar_authorization_url) free(cedar_authorization_url);
   cedar_authorization_url = url ? strdup(url) : nullptr;
+}
+
+void cedar_set_cache_enabled(bool enabled) {
+  cedar_authorization_cache_enabled = enabled;
 }
 #endif

@@ -40,4 +40,5 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info);
 void cedar_auth_cache_reset();
 size_t cedar_auth_cache_size();
 void cedar_set_authorization_url(const char *url);
+void cedar_set_cache_enabled(bool enabled);
 #endif

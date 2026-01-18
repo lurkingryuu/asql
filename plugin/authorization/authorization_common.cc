@@ -206,7 +206,7 @@ Json::Value auth_build_cedar_payload(
 
   json_payload["principal"] = prefix + "User::\"" + user_uid + "\"";
   json_payload["action"] = prefix + "Action::\"" + privilege + "\"";
-  json_payload["resource"] = resource_identifier;
+  json_payload["resource"] = prefix + resource_identifier;
   json_payload["context"]["day"] = day;
   json_payload["context"]["date"] = date;
   json_payload["context"]["time"] = fmt_time;
