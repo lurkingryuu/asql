@@ -123,13 +123,12 @@ struct AuthCacheKey {
   std::string action;
   std::string day;
   uint32_t date;
-  uint32_t time;
   std::string ip;
 
   bool operator==(const AuthCacheKey &other) const {
     return user == other.user && resource == other.resource &&
            action == other.action && day == other.day && date == other.date &&
-           time == other.time && ip == other.ip;
+           ip == other.ip;
   }
 };
 
@@ -146,7 +145,6 @@ struct AuthCacheKeyHash {
     h ^= std::hash<std::string>{}(k.action) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<std::string>{}(k.day) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<uint32_t>{}(k.date) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    h ^= std::hash<uint32_t>{}(k.time) + 0x9e3779b9 + (h << 6) + (h >> 2);
     h ^= std::hash<std::string>{}(k.ip) + 0x9e3779b9 + (h << 6) + (h >> 2);
     return h;
   }
@@ -201,9 +199,8 @@ static int check_single_privilege_cedar(
     uint32_t fmt_time, const std::string &fmt_ip, const std::string &ns) {
   // Check cache if enabled
   if (cedar_authorization_cache_enabled) {
-    AuthCacheKey key{
-        user_uid_value, resource_identifier, privilege, day, date, fmt_time,
-        fmt_ip};
+    AuthCacheKey key{user_uid_value, resource_identifier, privilege, day, date,
+                     fmt_ip};
     std::time_t now = std::time(nullptr);
 
     mysql_mutex_lock(&LOCK_auth_cache);
@@ -242,8 +239,7 @@ static int check_single_privilege_cedar(
     int result = 1;
     if (cedar_authorization_cache_enabled) {
       AuthCacheKey key{
-          user_uid_value, resource_identifier, privilege, day, date, fmt_time,
-          fmt_ip};
+          user_uid_value, resource_identifier, privilege, day, date, fmt_ip};
       std::time_t now = std::time(nullptr);
       AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
       mysql_mutex_lock(&LOCK_auth_cache);
@@ -256,8 +252,7 @@ static int check_single_privilege_cedar(
     int result = 0;
     if (cedar_authorization_cache_enabled) {
       AuthCacheKey key{
-          user_uid_value, resource_identifier, privilege, day, date, fmt_time,
-          fmt_ip};
+          user_uid_value, resource_identifier, privilege, day, date, fmt_ip};
       std::time_t now = std::time(nullptr);
       AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
       mysql_mutex_lock(&LOCK_auth_cache);
@@ -334,7 +329,7 @@ static int check_single_privilege_cedar(
                             "Cedar authorization request failed for privilege "
                             "%s: %s (cURL error: %d)",
                             privilege.c_str(), curl_easy_strerror(res), res);
-    return -1;  // Signal error
+    return 0;  // Signal error (fail-closed)
   }
 
   if (response_code != 200) {
@@ -344,7 +339,7 @@ static int check_single_privilege_cedar(
                             "privilege %s, response: %s",
                             response_code, privilege.c_str(),
                             response.data.c_str());
-    return -1;  // Signal error
+    return 0;  // Signal error (fail-closed)
   }
 
   // Parse response
@@ -360,7 +355,7 @@ static int check_single_privilege_cedar(
           &plugin_handle, MY_WARNING_LEVEL,
           "Failed to parse Cedar authorization response for privilege %s: %s",
           privilege.c_str(), parse_errors.c_str());
-    return -1;  // Signal error
+    return 0;  // Signal error (fail-closed)
   }
 
   if (!json_response.isMember("decision")) {
@@ -369,7 +364,7 @@ static int check_single_privilege_cedar(
                             "Cedar authorization response missing 'decision' "
                             "field for privilege %s",
                             privilege.c_str());
-    return -1;  // Signal error
+    return 0;  // Signal error (fail-closed)
   }
 
   std::string decision = json_response["decision"].asString();
@@ -383,9 +378,8 @@ static int check_single_privilege_cedar(
 
   // Update cache if enabled
   if (cedar_authorization_cache_enabled) {
-    AuthCacheKey key{
-        user_uid_value, resource_identifier, privilege, day, date, fmt_time,
-        fmt_ip};
+    AuthCacheKey key{user_uid_value, resource_identifier, privilege, day, date,
+                     fmt_ip};
     std::time_t now = std::time(nullptr);
     AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
 
