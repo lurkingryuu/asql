@@ -271,7 +271,7 @@ static int check_single_privilege_cedar(
           &plugin_handle, MY_ERROR_LEVEL,
           "Failed to initialize libcurl for Cedar authorization");
     }
-    return 0;
+    return -1;
   }
 
   // Create JSON payload for single privilege
@@ -329,7 +329,7 @@ static int check_single_privilege_cedar(
                             "Cedar authorization request failed for privilege "
                             "%s: %s (cURL error: %d)",
                             privilege.c_str(), curl_easy_strerror(res), res);
-    return 0;  // Signal error (fail-closed)
+    return -1;  // Signal error (fail-open to IGNORE)
   }
 
   if (response_code != 200) {
@@ -339,7 +339,7 @@ static int check_single_privilege_cedar(
                             "privilege %s, response: %s",
                             response_code, privilege.c_str(),
                             response.data.c_str());
-    return 0;  // Signal error (fail-closed)
+    return -1;  // Signal error (fail-open to IGNORE)
   }
 
   // Parse response
@@ -355,7 +355,7 @@ static int check_single_privilege_cedar(
           &plugin_handle, MY_WARNING_LEVEL,
           "Failed to parse Cedar authorization response for privilege %s: %s",
           privilege.c_str(), parse_errors.c_str());
-    return 0;  // Signal error (fail-closed)
+    return -1;  // Signal error (fail-open to IGNORE)
   }
 
   if (!json_response.isMember("decision")) {
@@ -364,7 +364,7 @@ static int check_single_privilege_cedar(
                             "Cedar authorization response missing 'decision' "
                             "field for privilege %s",
                             privilege.c_str());
-    return 0;  // Signal error (fail-closed)
+    return -1;  // Signal error (fail-open to IGNORE)
   }
 
   std::string decision = json_response["decision"].asString();
@@ -421,7 +421,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                             "Cedar authorization plugin not initialized");
     }
-    return 0;
+    return -1;
   }
 
   if (!cedar_authorization_url || strlen(cedar_authorization_url) == 0) {
