@@ -78,6 +78,13 @@
 static char *external_authorization_url;
 static int external_authorization_timeout = 5000;  // milliseconds
 
+// SSL/TLS configuration variables (disabled by default for HTTP)
+static bool external_authorization_ssl_verify_peer = false;
+static bool external_authorization_ssl_verify_host = false;
+static char *external_authorization_ssl_ca_file = nullptr;
+static char *external_authorization_ssl_cert_file = nullptr;
+static char *external_authorization_ssl_key_file = nullptr;
+
 // Plugin initialization flag
 static bool plugin_initialized = false;
 // Saved plugin handle for logging
@@ -239,6 +246,58 @@ static mysql_authorization_result_t call_external_service(
   struct curl_slist *headers = nullptr;
   headers = curl_slist_append(headers, "Content-Type: application/json");
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+  // Configure SSL/TLS options
+  if (external_authorization_ssl_verify_peer) {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+  } else {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "SSL peer verification disabled");
+    }
+  }
+
+  if (external_authorization_ssl_verify_host) {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+  } else {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "SSL host verification disabled");
+    }
+  }
+
+  if (external_authorization_ssl_ca_file &&
+      strlen(external_authorization_ssl_ca_file) > 0) {
+    curl_easy_setopt(curl, CURLOPT_CAINFO, external_authorization_ssl_ca_file);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Using CA certificate file: %s",
+                            external_authorization_ssl_ca_file);
+    }
+  }
+
+  if (external_authorization_ssl_cert_file &&
+      strlen(external_authorization_ssl_cert_file) > 0) {
+    curl_easy_setopt(curl, CURLOPT_SSLCERT,
+                     external_authorization_ssl_cert_file);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Using client certificate file: %s",
+                            external_authorization_ssl_cert_file);
+    }
+  }
+
+  if (external_authorization_ssl_key_file &&
+      strlen(external_authorization_ssl_key_file) > 0) {
+    curl_easy_setopt(curl, CURLOPT_SSLKEY, external_authorization_ssl_key_file);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Using client private key file: %s",
+                            external_authorization_ssl_key_file);
+    }
+  }
 
   // Perform the request
   if (plugin_handle) {
@@ -439,9 +498,47 @@ static MYSQL_SYSVAR_INT(
     0  // block_size
 );
 
+static MYSQL_SYSVAR_BOOL(
+    ssl_verify_peer, external_authorization_ssl_verify_peer,
+    PLUGIN_VAR_RQCMDARG,
+    "Enable SSL peer certificate verification for HTTPS connections (default: "
+    "disabled)",
+    nullptr, nullptr, false);
+
+static MYSQL_SYSVAR_BOOL(
+    ssl_verify_host, external_authorization_ssl_verify_host,
+    PLUGIN_VAR_RQCMDARG,
+    "Enable SSL host name verification for HTTPS connections (default: "
+    "disabled)",
+    nullptr, nullptr, false);
+
+static MYSQL_SYSVAR_STR(ssl_ca_file, external_authorization_ssl_ca_file,
+                        PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+                        "Path to CA certificate file for SSL/TLS verification",
+                        nullptr, nullptr, nullptr);
+
+static MYSQL_SYSVAR_STR(
+    ssl_cert_file, external_authorization_ssl_cert_file,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+    "Path to client certificate file for mutual TLS authentication", nullptr,
+    nullptr, nullptr);
+
+static MYSQL_SYSVAR_STR(
+    ssl_key_file, external_authorization_ssl_key_file,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+    "Path to client private key file for mutual TLS authentication", nullptr,
+    nullptr, nullptr);
+
 // System variables array
 static SYS_VAR *external_authorization_system_vars[] = {
-    MYSQL_SYSVAR(url), MYSQL_SYSVAR(timeout), nullptr};
+    MYSQL_SYSVAR(url),
+    MYSQL_SYSVAR(timeout),
+    MYSQL_SYSVAR(ssl_verify_peer),
+    MYSQL_SYSVAR(ssl_verify_host),
+    MYSQL_SYSVAR(ssl_ca_file),
+    MYSQL_SYSVAR(ssl_cert_file),
+    MYSQL_SYSVAR(ssl_key_file),
+    nullptr};
 
 // Plugin declaration
 mysql_declare_plugin(external_authorization){

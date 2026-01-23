@@ -27,19 +27,45 @@
   Cedar Authorization Plugin
 
   This plugin implements authorization using Amazon Cedar policy engine.
-  It delegates authorization decisions to a Cedar service running over HTTP.
+  It delegates authorization decisions to a Cedar service running over HTTP or
+  HTTPS.
 
   Features:
   - Policy-based authorization using Cedar
   - Supports all authorization event types (DB, Table, Column, Routine)
   - Configurable Cedar service URL and timeout
+  - HTTP support by default
+  - Optional HTTPS support with configurable SSL/TLS certificate verification
+  - Optional mutual TLS (mTLS) authentication support
   - Rich context information (time, date, IP address)
+  - Authorization response caching for performance
   - Detailed logging for debugging
 
-  Configuration:
+  Basic Configuration (HTTP):
   INSTALL PLUGIN cedar_authorization SONAME 'cedar_authorization.so';
-  SET GLOBAL cedar_authorization_url = 'http://0.0.0.0:8180';
+  SET GLOBAL cedar_authorization_url = 'http://localhost:8180';
   SET GLOBAL cedar_authorization_timeout = 5000;  -- milliseconds
+
+  Optional HTTPS Configuration:
+  -- Use HTTPS URL
+  SET GLOBAL cedar_authorization_url = 'https://cedar-service.example.com:8180';
+
+  -- Enable SSL certificate verification (recommended for production)
+  SET GLOBAL cedar_authorization_ssl_verify_peer = 1;  -- Verify server
+  certificate SET GLOBAL cedar_authorization_ssl_verify_host = 1;  -- Verify
+  hostname
+
+  -- Optional: Specify custom CA certificate bundle
+  SET GLOBAL cedar_authorization_ssl_ca_file = '/path/to/ca-cert.pem';
+
+  -- Optional: Enable mutual TLS (client authentication)
+  SET GLOBAL cedar_authorization_ssl_cert_file = '/path/to/client-cert.pem';
+  SET GLOBAL cedar_authorization_ssl_key_file = '/path/to/client-key.pem';
+
+  Cache Configuration (optional):
+  SET GLOBAL cedar_authorization_cache_enabled = 1;
+  SET GLOBAL cedar_authorization_cache_size = 1024;
+  SET GLOBAL cedar_authorization_cache_ttl = 300;  -- seconds
 
   Cedar Service API:
   The plugin sends separate POST requests to /v1/is_authorized for each
@@ -72,6 +98,15 @@
       "errors": []
     }
   }
+
+  Security Notes:
+  - HTTP is used by default for simplicity and backward compatibility
+  - For production environments with sensitive data, enable HTTPS with SSL
+  verification
+  - SSL certificate verification is disabled by default to avoid issues with
+  self-signed certs
+  - Enable ssl_verify_peer and ssl_verify_host for production deployments
+  - Use mutual TLS for enhanced service-to-service authentication
 */
 
 #include <mysql/plugin.h>
@@ -105,6 +140,13 @@ using namespace std;
 static char *cedar_authorization_url;
 static char *cedar_authorization_namespace;
 static int cedar_authorization_timeout = 5000;  // milliseconds
+
+// SSL/TLS configuration variables (disabled by default for HTTP)
+static bool cedar_authorization_ssl_verify_peer = false;
+static bool cedar_authorization_ssl_verify_host = false;
+static char *cedar_authorization_ssl_ca_file = nullptr;
+static char *cedar_authorization_ssl_cert_file = nullptr;
+static char *cedar_authorization_ssl_key_file = nullptr;
 
 // Caching system variables
 static bool cedar_authorization_cache_enabled = true;
@@ -303,6 +345,57 @@ static int check_single_privilege_cedar(
   struct curl_slist *headers = nullptr;
   headers = curl_slist_append(headers, "Content-Type: application/json");
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+  // Configure SSL/TLS options
+  if (cedar_authorization_ssl_verify_peer) {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+  } else {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "SSL peer verification disabled for Cedar service");
+    }
+  }
+
+  if (cedar_authorization_ssl_verify_host) {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+  } else {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "SSL host verification disabled for Cedar service");
+    }
+  }
+
+  if (cedar_authorization_ssl_ca_file &&
+      strlen(cedar_authorization_ssl_ca_file) > 0) {
+    curl_easy_setopt(curl, CURLOPT_CAINFO, cedar_authorization_ssl_ca_file);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Using CA certificate file: %s",
+                            cedar_authorization_ssl_ca_file);
+    }
+  }
+
+  if (cedar_authorization_ssl_cert_file &&
+      strlen(cedar_authorization_ssl_cert_file) > 0) {
+    curl_easy_setopt(curl, CURLOPT_SSLCERT, cedar_authorization_ssl_cert_file);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Using client certificate file: %s",
+                            cedar_authorization_ssl_cert_file);
+    }
+  }
+
+  if (cedar_authorization_ssl_key_file &&
+      strlen(cedar_authorization_ssl_key_file) > 0) {
+    curl_easy_setopt(curl, CURLOPT_SSLKEY, cedar_authorization_ssl_key_file);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Using client private key file: %s",
+                            cedar_authorization_ssl_key_file);
+    }
+  }
 
   // Perform the request
   CURLcode res = curl_easy_perform(curl);
@@ -801,6 +894,35 @@ static MYSQL_SYSVAR_INT(
     0                                                            // block_size
 );
 
+static MYSQL_SYSVAR_BOOL(
+    ssl_verify_peer, cedar_authorization_ssl_verify_peer, PLUGIN_VAR_RQCMDARG,
+    "Enable SSL peer certificate verification for HTTPS connections (default: "
+    "disabled)",
+    nullptr, nullptr, false);
+
+static MYSQL_SYSVAR_BOOL(
+    ssl_verify_host, cedar_authorization_ssl_verify_host, PLUGIN_VAR_RQCMDARG,
+    "Enable SSL host name verification for HTTPS connections (default: "
+    "disabled)",
+    nullptr, nullptr, false);
+
+static MYSQL_SYSVAR_STR(ssl_ca_file, cedar_authorization_ssl_ca_file,
+                        PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+                        "Path to CA certificate file for SSL/TLS verification",
+                        nullptr, nullptr, nullptr);
+
+static MYSQL_SYSVAR_STR(
+    ssl_cert_file, cedar_authorization_ssl_cert_file,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+    "Path to client certificate file for mutual TLS authentication", nullptr,
+    nullptr, nullptr);
+
+static MYSQL_SYSVAR_STR(
+    ssl_key_file, cedar_authorization_ssl_key_file,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+    "Path to client private key file for mutual TLS authentication", nullptr,
+    nullptr, nullptr);
+
 static MYSQL_SYSVAR_BOOL(cache_enabled, cedar_authorization_cache_enabled,
                          PLUGIN_VAR_RQCMDARG, "Enable authorization caching",
                          nullptr, nullptr, true);
@@ -842,10 +964,19 @@ static MYSQL_SYSVAR_BOOL(
 
 // System variables array
 static SYS_VAR *cedar_authorization_system_vars[] = {
-    MYSQL_SYSVAR(url),         MYSQL_SYSVAR(namespace),
-    MYSQL_SYSVAR(timeout),     MYSQL_SYSVAR(cache_enabled),
-    MYSQL_SYSVAR(cache_size),  MYSQL_SYSVAR(cache_ttl),
-    MYSQL_SYSVAR(cache_flush), nullptr};
+    MYSQL_SYSVAR(url),
+    MYSQL_SYSVAR(namespace),
+    MYSQL_SYSVAR(timeout),
+    MYSQL_SYSVAR(ssl_verify_peer),
+    MYSQL_SYSVAR(ssl_verify_host),
+    MYSQL_SYSVAR(ssl_ca_file),
+    MYSQL_SYSVAR(ssl_cert_file),
+    MYSQL_SYSVAR(ssl_key_file),
+    MYSQL_SYSVAR(cache_enabled),
+    MYSQL_SYSVAR(cache_size),
+    MYSQL_SYSVAR(cache_ttl),
+    MYSQL_SYSVAR(cache_flush),
+    nullptr};
 
 // Plugin declaration
 mysql_declare_plugin(cedar_authorization){

@@ -69,3 +69,6 @@ else()
   target_include_directories(cedar_authorization PRIVATE /usr/include/jsoncpp)
   TARGET_LINK_LIBRARIES(cedar_authorization curl jsoncpp)
 endif()
+
+# Note: libcurl is typically built with OpenSSL support, enabling HTTPS out of the box.
+# If curl was built with SSL/TLS support (--with-ssl), HTTPS will work automatically.
