@@ -691,6 +691,7 @@ bool cedar_upsert_entity(const std::string &entity_type,
 
   struct curl_slist *headers = nullptr;
   headers = curl_slist_append(headers, "Content-Type: application/json");
+  headers = curl_slist_append(headers, "X-Cedar-Write-Origin: db-entity-sync");
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
   CURLcode res = curl_easy_perform(curl);
@@ -789,6 +790,7 @@ bool cedar_delete_entity(const std::string &entity_id,
 
   struct curl_slist *headers = nullptr;
   headers = curl_slist_append(headers, "Content-Type: application/json");
+  headers = curl_slist_append(headers, "X-Cedar-Write-Origin: db-entity-sync");
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
   CURLcode res = curl_easy_perform(curl);
