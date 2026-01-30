@@ -1100,74 +1100,46 @@ static SYS_VAR *cedar_authorization_system_vars[] = {
     MYSQL_SYSVAR(reset_stats),
     nullptr};
 
-// Status variables
-static int show_auth_stat(MYSQL_THD, SHOW_VAR *var, char *buff) {
-  int64_t value = 0;
-  // The 'value' pointer in SHOW_VAR is char*, so we cast it to the stat we want
-  // However, for SHOW_FUNC, 'buff' is where we write the result if it fits, or
-  // we point var->value to it.
-  // Actually, for simple types like LONGLONG, we can just point var->value to
-  // a persistent variable. But our variables are atomic.
-  // Safer way: Write to buff (which is 1024 bytes) and set var->value to buff.
-
-  // Identify which variable is being requested based on the name or context?
-  // Standard SHOW_FUNC doesn't pass the name. We usually use the 'value' field
-  // of the input SHOW_VAR as a user-data pointer (offset or enum).
-
-  // Let's assume we pass the offset/index in the 'value' field of the array
-  // definition.
-  const size_t offset = (size_t)var->value;
-
-  switch (offset) {
-    case 0:
-      value = g_auth_stats.requests.load(std::memory_order_relaxed);
-      break;
-    case 1:
-      value = g_auth_stats.grants.load(std::memory_order_relaxed);
-      break;
-    case 2:
-      value = g_auth_stats.denies.load(std::memory_order_relaxed);
-      break;
-    case 3:
-      value = g_auth_stats.errors.load(std::memory_order_relaxed);
-      break;
-    case 4:
-      value = g_auth_stats.cache_hits.load(std::memory_order_relaxed);
-      break;
-    case 5:
-      value = g_auth_stats.cache_misses.load(std::memory_order_relaxed);
-      break;
-    case 6:
-      value = g_auth_stats.cache_evictions.load(std::memory_order_relaxed);
-      break;
-    case 7:
-      value = g_auth_stats.total_time_us.load(std::memory_order_relaxed);
-      break;
-    case 8:
-      value = g_auth_stats.remote_time_us.load(std::memory_order_relaxed);
-      break;
+// Status variables - Macro to define show functions for each stat
+#define DEF_SHOW_STAT(name, stat_member)                                      \
+  static int show_auth_##name(MYSQL_THD, SHOW_VAR *var, char *buff) {         \
+    int64_t value = g_auth_stats.stat_member.load(std::memory_order_relaxed); \
+    memcpy(buff, &value, sizeof(value));                                      \
+    var->type = SHOW_LONGLONG;                                                \
+    var->value = buff;                                                        \
+    return 0;                                                                 \
   }
 
-  // Copy value to buffer
-  memcpy(buff, &value, sizeof(value));
-  var->type = SHOW_LONGLONG;
-  var->value = buff;
-  return 0;
-}
+DEF_SHOW_STAT(requests, requests)
+DEF_SHOW_STAT(grants, grants)
+DEF_SHOW_STAT(denies, denies)
+DEF_SHOW_STAT(errors, errors)
+DEF_SHOW_STAT(cache_hits, cache_hits)
+DEF_SHOW_STAT(cache_misses, cache_misses)
+DEF_SHOW_STAT(cache_evictions, cache_evictions)
+DEF_SHOW_STAT(total_time_us, total_time_us)
+DEF_SHOW_STAT(remote_time_us, remote_time_us)
 
 static SHOW_VAR cedar_status_vars[] = {
-    {"cedar_authorization_requests", (char *)0, SHOW_FUNC, show_auth_stat},
-    {"cedar_authorization_grants", (char *)1, SHOW_FUNC, show_auth_stat},
-    {"cedar_authorization_denies", (char *)2, SHOW_FUNC, show_auth_stat},
-    {"cedar_authorization_errors", (char *)3, SHOW_FUNC, show_auth_stat},
-    {"cedar_authorization_cache_hits", (char *)4, SHOW_FUNC, show_auth_stat},
-    {"cedar_authorization_cache_misses", (char *)5, SHOW_FUNC, show_auth_stat},
-    {"cedar_authorization_cache_evictions", (char *)6, SHOW_FUNC,
-     show_auth_stat},
-    {"cedar_authorization_total_time_us", (char *)7, SHOW_FUNC, show_auth_stat},
-    {"cedar_authorization_remote_time_us", (char *)8, SHOW_FUNC,
-     show_auth_stat},
-    {nullptr, nullptr, SHOW_UNDEF, nullptr}};
+    {"cedar_authorization_requests", (char *)&show_auth_requests, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_grants", (char *)&show_auth_grants, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_denies", (char *)&show_auth_denies, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_errors", (char *)&show_auth_errors, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_cache_hits", (char *)&show_auth_cache_hits, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_cache_misses", (char *)&show_auth_cache_misses,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_cache_evictions", (char *)&show_auth_cache_evictions,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_total_time_us", (char *)&show_auth_total_time_us,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_remote_time_us", (char *)&show_auth_remote_time_us,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
 
 // Plugin declaration
 mysql_declare_plugin(cedar_authorization){
