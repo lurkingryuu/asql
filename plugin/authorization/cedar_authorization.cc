@@ -871,14 +871,18 @@ mysql_authorization_result_t cedar_check(
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: GRANT");
     }
-    g_auth_stats.grants.fetch_add(1, std::memory_order_relaxed);
+    if (cedar_authorization_collect_stats) {
+      g_auth_stats.grants.fetch_add(1, std::memory_order_relaxed);
+    }
     return MYSQL_AUTHORIZATION_GRANT;
   } else {
     if (plugin_handle) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: DENY");
     }
-    g_auth_stats.denies.fetch_add(1, std::memory_order_relaxed);
+    if (cedar_authorization_collect_stats) {
+      g_auth_stats.denies.fetch_add(1, std::memory_order_relaxed);
+    }
     return MYSQL_AUTHORIZATION_DENY;
   }
 }
