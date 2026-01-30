@@ -1155,7 +1155,7 @@ static int show_auth_stat(MYSQL_THD, SHOW_VAR *var, char *buff) {
   return 0;
 }
 
-static st_mysql_show_var cedar_status_vars[] = {
+static SHOW_VAR cedar_status_vars[] = {
     {"cedar_authorization_requests", (char *)0, SHOW_FUNC, show_auth_stat},
     {"cedar_authorization_grants", (char *)1, SHOW_FUNC, show_auth_stat},
     {"cedar_authorization_denies", (char *)2, SHOW_FUNC, show_auth_stat},
