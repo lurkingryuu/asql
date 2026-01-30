@@ -254,6 +254,64 @@ TEST_F(CedarPluginInitializedTest, ServerErrorReturnsIgnore) {
   EXPECT_EQ(result, MYSQL_AUTHORIZATION_IGNORE);
 }
 
+TEST_F(CedarPluginInitializedTest, StatsIncrements) {
+  mysql_authorization_event ev{};
+  fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
+
+  cedar_reset_stats_for_test();
+  cedar_set_collect_stats(true);
+  cedar_set_authorization_url("http://mock-allow");
+
+  // Perform request
+  auto result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_GRANT);
+
+  EXPECT_EQ(cedar_get_auth_stat_requests(), 1);
+  EXPECT_EQ(cedar_get_auth_stat_grants(), 1);
+  EXPECT_EQ(cedar_get_auth_stat_denies(), 0);
+}
+
+TEST_F(CedarPluginInitializedTest, StatsGating) {
+  mysql_authorization_event ev{};
+  fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
+
+  cedar_reset_stats_for_test();
+  cedar_set_collect_stats(false);
+  cedar_set_authorization_url("http://mock-allow");
+
+  // Perform request with stats disabled
+  auto result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_GRANT);
+
+  EXPECT_EQ(cedar_get_auth_stat_requests(), 0);
+  EXPECT_EQ(cedar_get_auth_stat_grants(), 0);
+
+  // Re-enable and verify it works again
+  cedar_set_collect_stats(true);
+  result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_GRANT);
+
+  EXPECT_EQ(cedar_get_auth_stat_requests(), 1);
+}
+
+TEST_F(CedarPluginInitializedTest, StatsReset) {
+  mysql_authorization_event ev{};
+  fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
+
+  cedar_reset_stats_for_test();
+  cedar_set_collect_stats(true);
+  cedar_set_authorization_url("http://mock-allow");
+
+  // Increment stats
+  (void)cedar_check(&ev);
+  EXPECT_EQ(cedar_get_auth_stat_requests(), 1);
+
+  // Reset
+  cedar_reset_stats_for_test();
+  EXPECT_EQ(cedar_get_auth_stat_requests(), 0);
+  EXPECT_EQ(cedar_get_auth_stat_grants(), 0);
+}
+
 // TODO: Add complex ANY_OF mixed test when mock infrastructure supports
 // fine-grained control
 

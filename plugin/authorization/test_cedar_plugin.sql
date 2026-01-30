@@ -17,6 +17,9 @@ WHERE PLUGIN_NAME = 'cedar_authorization';
 -- Step 4: Check system variables
 SHOW VARIABLES LIKE 'cedar_authorization%';
 
+-- Step 4.1: Check status variables (statistics)
+SHOW STATUS LIKE 'cedar_authorization%';
+
 -- Step 5: Create test database and tables
 CREATE DATABASE IF NOT EXISTS test_cedar_db;
 USE test_cedar_db;

@@ -132,9 +132,26 @@
 #include "violite.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <ctime>
 using namespace std;
+
+// Statistics structure
+struct AuthStats {
+  std::atomic<int64_t> requests{0};
+  std::atomic<int64_t> grants{0};
+  std::atomic<int64_t> denies{0};
+  std::atomic<int64_t> errors{0};
+  std::atomic<int64_t> cache_hits{0};
+  std::atomic<int64_t> cache_misses{0};
+  std::atomic<int64_t> cache_evictions{0};
+  std::atomic<int64_t> total_time_us{0};
+  std::atomic<int64_t> remote_time_us{0};
+};
+
+static AuthStats g_auth_stats;
 
 // Plugin system variables
 static char *cedar_authorization_url;
@@ -153,6 +170,10 @@ static bool cedar_authorization_cache_enabled = true;
 static int cedar_authorization_cache_size = 1024;
 static int cedar_authorization_cache_ttl = 300;  // seconds
 static bool cedar_authorization_cache_flush = false;
+
+// Statistics system variables
+static bool cedar_authorization_collect_stats = true;
+static bool cedar_authorization_reset_stats = false;
 
 // Cache implementation
 #include <mutex>
@@ -251,6 +272,9 @@ static int check_single_privilege_cedar(
       if (now < it->second.expires) {
         int result = it->second.result;
         mysql_mutex_unlock(&LOCK_auth_cache);
+        if (cedar_authorization_collect_stats) {
+          g_auth_stats.cache_hits.fetch_add(1, std::memory_order_relaxed);
+        }
         if (plugin_handle) {
           my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                                 "Cache hit for privilege %s: %d",
@@ -260,9 +284,21 @@ static int check_single_privilege_cedar(
       } else {
         // Expired
         auth_cache.erase(it);
+        if (cedar_authorization_collect_stats) {
+          g_auth_stats.cache_misses.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+    } else {
+      if (cedar_authorization_collect_stats) {
+        g_auth_stats.cache_misses.fetch_add(1, std::memory_order_relaxed);
       }
     }
     mysql_mutex_unlock(&LOCK_auth_cache);
+  } else {
+    // Cache disabled counts as miss? Or just ignore?
+    // pg_authorization counts misses if cache lookup fails.
+    // If cache is disabled, we don't look up, so strictly it's not a cache miss
+    // event.
   }
 
   // Check if URL is configured
@@ -398,7 +434,21 @@ static int check_single_privilege_cedar(
   }
 
   // Perform the request
-  CURLcode res = curl_easy_perform(curl);
+  CURLcode res;
+  if (cedar_authorization_collect_stats) {
+    auto start_remote = std::chrono::high_resolution_clock::now();
+    res = curl_easy_perform(curl);
+    auto end_remote = std::chrono::high_resolution_clock::now();
+    g_auth_stats.remote_time_us.fetch_add(
+        std::chrono::duration_cast<std::chrono::microseconds>(end_remote -
+                                                              start_remote)
+            .count(),
+        std::memory_order_relaxed);
+  } else {
+    // If stats disabled, just perform without timing
+    res = curl_easy_perform(curl);
+  }
+
   long response_code;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
 
@@ -422,6 +472,9 @@ static int check_single_privilege_cedar(
                             "Cedar authorization request failed for privilege "
                             "%s: %s (cURL error: %d)",
                             privilege.c_str(), curl_easy_strerror(res), res);
+    if (cedar_authorization_collect_stats) {
+      g_auth_stats.errors.fetch_add(1, std::memory_order_relaxed);
+    }
     return -1;  // Signal error (fail-open to IGNORE)
   }
 
@@ -432,6 +485,9 @@ static int check_single_privilege_cedar(
                             "privilege %s, response: %s",
                             response_code, privilege.c_str(),
                             response.data.c_str());
+    if (cedar_authorization_collect_stats) {
+      g_auth_stats.errors.fetch_add(1, std::memory_order_relaxed);
+    }
     return -1;  // Signal error (fail-open to IGNORE)
   }
 
@@ -448,6 +504,9 @@ static int check_single_privilege_cedar(
           &plugin_handle, MY_WARNING_LEVEL,
           "Failed to parse Cedar authorization response for privilege %s: %s",
           privilege.c_str(), parse_errors.c_str());
+    if (cedar_authorization_collect_stats) {
+      g_auth_stats.errors.fetch_add(1, std::memory_order_relaxed);
+    }
     return -1;  // Signal error (fail-open to IGNORE)
   }
 
@@ -457,6 +516,9 @@ static int check_single_privilege_cedar(
                             "Cedar authorization response missing 'decision' "
                             "field for privilege %s",
                             privilege.c_str());
+    if (cedar_authorization_collect_stats) {
+      g_auth_stats.errors.fetch_add(1, std::memory_order_relaxed);
+    }
     return -1;  // Signal error (fail-open to IGNORE)
   }
 
@@ -484,6 +546,10 @@ static int check_single_privilege_cedar(
         my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                               "Cache full, clearing %zu entries",
                               auth_cache.size());
+      }
+      if (cedar_authorization_collect_stats) {
+        g_auth_stats.cache_evictions.fetch_add(auth_cache.size(),
+                                               std::memory_order_relaxed);
       }
       auth_cache.clear();
     }
@@ -715,6 +781,10 @@ std::string cedar_create_resource_identifier(
 // Main authorization callback function
 mysql_authorization_result_t cedar_check(
     const mysql_authorization_event *event) {
+  if (cedar_authorization_collect_stats) {
+    g_auth_stats.requests.fetch_add(1, std::memory_order_relaxed);
+  }
+
   if (plugin_handle) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
@@ -776,7 +846,19 @@ mysql_authorization_result_t cedar_check(
     return MYSQL_AUTHORIZATION_IGNORE;
   }
 
-  int result = cedar_check_access_core(event);
+  int result;
+  if (cedar_authorization_collect_stats) {
+    auto start_total = std::chrono::high_resolution_clock::now();
+    result = cedar_check_access_core(event);
+    auto end_total = std::chrono::high_resolution_clock::now();
+    g_auth_stats.total_time_us.fetch_add(
+        std::chrono::duration_cast<std::chrono::microseconds>(end_total -
+                                                              start_total)
+            .count(),
+        std::memory_order_relaxed);
+  } else {
+    result = cedar_check_access_core(event);
+  }
 
   if (result == -1) {
     if (plugin_handle) {
@@ -789,12 +871,14 @@ mysql_authorization_result_t cedar_check(
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: GRANT");
     }
+    g_auth_stats.grants.fetch_add(1, std::memory_order_relaxed);
     return MYSQL_AUTHORIZATION_GRANT;
   } else {
     if (plugin_handle) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: DENY");
     }
+    g_auth_stats.denies.fetch_add(1, std::memory_order_relaxed);
     return MYSQL_AUTHORIZATION_DENY;
   }
 }
@@ -962,6 +1046,42 @@ static MYSQL_SYSVAR_BOOL(
     "Flush the authorization cache (automatically resets to 0)", nullptr,
     cedar_authorization_cache_flush_update, false);
 
+// Stats update callback
+static void cedar_authorization_reset_stats_update(
+    MYSQL_THD thd [[maybe_unused]], SYS_VAR *var [[maybe_unused]],
+    void *var_ptr [[maybe_unused]], const void *save) {
+  bool new_val = *static_cast<const bool *>(save);
+  if (new_val) {
+    g_auth_stats.requests.store(0, std::memory_order_relaxed);
+    g_auth_stats.grants.store(0, std::memory_order_relaxed);
+    g_auth_stats.denies.store(0, std::memory_order_relaxed);
+    g_auth_stats.errors.store(0, std::memory_order_relaxed);
+    g_auth_stats.cache_hits.store(0, std::memory_order_relaxed);
+    g_auth_stats.cache_misses.store(0, std::memory_order_relaxed);
+    g_auth_stats.cache_evictions.store(0, std::memory_order_relaxed);
+    g_auth_stats.total_time_us.store(0, std::memory_order_relaxed);
+    g_auth_stats.remote_time_us.store(0, std::memory_order_relaxed);
+
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                            "Authorization statistics reset");
+    }
+
+    // Reset the variable to false
+    cedar_authorization_reset_stats = false;
+  }
+}
+
+static MYSQL_SYSVAR_BOOL(collect_stats, cedar_authorization_collect_stats,
+                         PLUGIN_VAR_RQCMDARG,
+                         "Enable collection of authorization statistics",
+                         nullptr, nullptr, true);
+
+static MYSQL_SYSVAR_BOOL(
+    reset_stats, cedar_authorization_reset_stats, PLUGIN_VAR_RQCMDARG,
+    "Reset authorization statistics (automatically resets to 0)", nullptr,
+    cedar_authorization_reset_stats_update, false);
+
 // System variables array
 static SYS_VAR *cedar_authorization_system_vars[] = {
     MYSQL_SYSVAR(url),
@@ -976,7 +1096,78 @@ static SYS_VAR *cedar_authorization_system_vars[] = {
     MYSQL_SYSVAR(cache_size),
     MYSQL_SYSVAR(cache_ttl),
     MYSQL_SYSVAR(cache_flush),
+    MYSQL_SYSVAR(collect_stats),
+    MYSQL_SYSVAR(reset_stats),
     nullptr};
+
+// Status variables
+static int show_auth_stat(MYSQL_THD, SHOW_VAR *var, char *buff) {
+  int64_t value = 0;
+  // The 'value' pointer in SHOW_VAR is char*, so we cast it to the stat we want
+  // However, for SHOW_FUNC, 'buff' is where we write the result if it fits, or
+  // we point var->value to it.
+  // Actually, for simple types like LONGLONG, we can just point var->value to
+  // a persistent variable. But our variables are atomic.
+  // Safer way: Write to buff (which is 1024 bytes) and set var->value to buff.
+
+  // Identify which variable is being requested based on the name or context?
+  // Standard SHOW_FUNC doesn't pass the name. We usually use the 'value' field
+  // of the input SHOW_VAR as a user-data pointer (offset or enum).
+
+  // Let's assume we pass the offset/index in the 'value' field of the array
+  // definition.
+  const size_t offset = (size_t)var->value;
+
+  switch (offset) {
+    case 0:
+      value = g_auth_stats.requests.load(std::memory_order_relaxed);
+      break;
+    case 1:
+      value = g_auth_stats.grants.load(std::memory_order_relaxed);
+      break;
+    case 2:
+      value = g_auth_stats.denies.load(std::memory_order_relaxed);
+      break;
+    case 3:
+      value = g_auth_stats.errors.load(std::memory_order_relaxed);
+      break;
+    case 4:
+      value = g_auth_stats.cache_hits.load(std::memory_order_relaxed);
+      break;
+    case 5:
+      value = g_auth_stats.cache_misses.load(std::memory_order_relaxed);
+      break;
+    case 6:
+      value = g_auth_stats.cache_evictions.load(std::memory_order_relaxed);
+      break;
+    case 7:
+      value = g_auth_stats.total_time_us.load(std::memory_order_relaxed);
+      break;
+    case 8:
+      value = g_auth_stats.remote_time_us.load(std::memory_order_relaxed);
+      break;
+  }
+
+  // Copy value to buffer
+  memcpy(buff, &value, sizeof(value));
+  var->type = SHOW_LONGLONG;
+  var->value = buff;
+  return 0;
+}
+
+static st_mysql_show_var cedar_status_vars[] = {
+    {"cedar_authorization_requests", (char *)0, SHOW_FUNC, show_auth_stat},
+    {"cedar_authorization_grants", (char *)1, SHOW_FUNC, show_auth_stat},
+    {"cedar_authorization_denies", (char *)2, SHOW_FUNC, show_auth_stat},
+    {"cedar_authorization_errors", (char *)3, SHOW_FUNC, show_auth_stat},
+    {"cedar_authorization_cache_hits", (char *)4, SHOW_FUNC, show_auth_stat},
+    {"cedar_authorization_cache_misses", (char *)5, SHOW_FUNC, show_auth_stat},
+    {"cedar_authorization_cache_evictions", (char *)6, SHOW_FUNC,
+     show_auth_stat},
+    {"cedar_authorization_total_time_us", (char *)7, SHOW_FUNC, show_auth_stat},
+    {"cedar_authorization_remote_time_us", (char *)8, SHOW_FUNC,
+     show_auth_stat},
+    {nullptr, nullptr, SHOW_UNDEF, nullptr}};
 
 // Plugin declaration
 mysql_declare_plugin(cedar_authorization){
@@ -990,7 +1181,7 @@ mysql_declare_plugin(cedar_authorization){
     nullptr,                          // check_uninstall
     cedar_authorization_deinit,       // deinit function
     0x0100,                           // version
-    nullptr,                          // status vars
+    cedar_status_vars,                // status vars
     cedar_authorization_system_vars,  // system vars
     nullptr,                          // config options
     0,                                // flags
@@ -1019,5 +1210,30 @@ void cedar_set_authorization_url(const char *url) {
 
 void cedar_set_cache_enabled(bool enabled) {
   cedar_authorization_cache_enabled = enabled;
+}
+
+// Stats testing helpers
+int64_t cedar_get_auth_stat_requests() {
+  return g_auth_stats.requests.load(std::memory_order_relaxed);
+}
+int64_t cedar_get_auth_stat_grants() {
+  return g_auth_stats.grants.load(std::memory_order_relaxed);
+}
+int64_t cedar_get_auth_stat_denies() {
+  return g_auth_stats.denies.load(std::memory_order_relaxed);
+}
+void cedar_reset_stats_for_test() {
+  g_auth_stats.requests.store(0, std::memory_order_relaxed);
+  g_auth_stats.grants.store(0, std::memory_order_relaxed);
+  g_auth_stats.denies.store(0, std::memory_order_relaxed);
+  g_auth_stats.errors.store(0, std::memory_order_relaxed);
+  g_auth_stats.cache_hits.store(0, std::memory_order_relaxed);
+  g_auth_stats.cache_misses.store(0, std::memory_order_relaxed);
+  g_auth_stats.cache_evictions.store(0, std::memory_order_relaxed);
+  g_auth_stats.total_time_us.store(0, std::memory_order_relaxed);
+  g_auth_stats.remote_time_us.store(0, std::memory_order_relaxed);
+}
+void cedar_set_collect_stats(bool enable) {
+  cedar_authorization_collect_stats = enable;
 }
 #endif
