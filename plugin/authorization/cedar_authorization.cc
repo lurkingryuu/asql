@@ -175,6 +175,10 @@ static bool cedar_authorization_cache_flush = false;
 static bool cedar_authorization_collect_stats = true;
 static bool cedar_authorization_reset_stats = false;
 
+// Logging system variables
+// Gate info-level logs; warnings/errors remain enabled.
+static bool cedar_authorization_log_info = false;
+
 // Cache implementation
 #include <mutex>
 #include <unordered_map>
@@ -221,6 +225,10 @@ static mysql_mutex_t LOCK_auth_cache;
 static bool plugin_initialized = false;
 // Saved plugin handle for logging
 static MYSQL_PLUGIN plugin_handle = nullptr;
+
+static inline bool cedar_should_log_info() {
+  return cedar_authorization_log_info && plugin_handle;
+}
 
 // Helper structure for HTTP response
 struct HttpResponse {
@@ -275,7 +283,7 @@ static int check_single_privilege_cedar(
         if (cedar_authorization_collect_stats) {
           g_auth_stats.cache_hits.fetch_add(1, std::memory_order_relaxed);
         }
-        if (plugin_handle) {
+        if (cedar_should_log_info()) {
           my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                                 "Cache hit for privilege %s: %d",
                                 privilege.c_str(), result);
@@ -361,7 +369,7 @@ static int check_single_privilege_cedar(
   std::string json_string = Json::writeString(builder, json_payload);
 
   // Log the request payload
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
         "Sending Cedar authorization request for privilege: %s",
@@ -406,7 +414,7 @@ static int check_single_privilege_cedar(
   if (cedar_authorization_ssl_ca_file &&
       strlen(cedar_authorization_ssl_ca_file) > 0) {
     curl_easy_setopt(curl, CURLOPT_CAINFO, cedar_authorization_ssl_ca_file);
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Using CA certificate file: %s",
                             cedar_authorization_ssl_ca_file);
@@ -416,7 +424,7 @@ static int check_single_privilege_cedar(
   if (cedar_authorization_ssl_cert_file &&
       strlen(cedar_authorization_ssl_cert_file) > 0) {
     curl_easy_setopt(curl, CURLOPT_SSLCERT, cedar_authorization_ssl_cert_file);
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Using client certificate file: %s",
                             cedar_authorization_ssl_cert_file);
@@ -426,7 +434,7 @@ static int check_single_privilege_cedar(
   if (cedar_authorization_ssl_key_file &&
       strlen(cedar_authorization_ssl_key_file) > 0) {
     curl_easy_setopt(curl, CURLOPT_SSLKEY, cedar_authorization_ssl_key_file);
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Using client private key file: %s",
                             cedar_authorization_ssl_key_file);
@@ -453,7 +461,7 @@ static int check_single_privilege_cedar(
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
 
   // Log response details
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "HTTP request completed for privilege %s. cURL "
                           "result: %d, HTTP code: %ld",
@@ -525,7 +533,7 @@ static int check_single_privilege_cedar(
   std::string decision = json_response["decision"].asString();
   int result = (decision == "Allow") ? 1 : 0;
 
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Cedar authorization result for privilege %s: '%s'",
                           privilege.c_str(), decision.c_str());
@@ -542,7 +550,7 @@ static int check_single_privilege_cedar(
     // Simple eviction if full: clear half the cache or just one?
     // For now, if we exceed size, we just clear it all to be safe and simple.
     if (auth_cache.size() >= (size_t)cedar_authorization_cache_size) {
-      if (plugin_handle) {
+      if (cedar_should_log_info()) {
         my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                               "Cache full, clearing %zu entries",
                               auth_cache.size());
@@ -562,7 +570,7 @@ static int check_single_privilege_cedar(
 
 // Access check core returns -1 (IGNORE), 0 (DENY), 1 (GRANT for all privs)
 static int cedar_check_access_core(const mysql_authorization_event *event) {
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
         "Cedar authorization service called for user: %s@%s, database: %s, "
@@ -602,7 +610,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
   std::string resource_identifier =
       auth_common::auth_create_resource_identifier(event, "");
 
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Cedar authorization check: user=%s, resource=%s, "
                           "privileges=%lu, namespace=%s",
@@ -616,7 +624,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
   auto fmt_time = auth_common::auth_get_time();
   std::string client_ip = auth_common::auth_get_client_ip(event->thd);
 
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                           "Context: day=%s, date=%u, time=%u, ip=%s",
                           day.c_str(), date, fmt_time, client_ip.c_str());
@@ -698,7 +706,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
     const std::string &privilege = p.first;
 
     any_implied = true;
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Checking Cedar authorization for privilege: %s",
                             privilege.c_str());
@@ -723,7 +731,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
       if (privilege_result == 1) {
         // ANY_OF: One success is enough
         authorized = true;
-        if (plugin_handle) {
+        if (cedar_should_log_info()) {
           my_plugin_log_message(
               &plugin_handle, MY_INFORMATION_LEVEL,
               "Cedar allowed privilege %s in ANY_OF mode -> GRANT",
@@ -735,7 +743,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
       // ALL_OF: One failure is enough to fail
       if (privilege_result == 0) {
         authorized = false;
-        if (plugin_handle) {
+        if (cedar_should_log_info()) {
           my_plugin_log_message(
               &plugin_handle, MY_INFORMATION_LEVEL,
               "Cedar denied privilege %s in ALL_OF mode -> DENY",
@@ -754,13 +762,13 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
   }
 
   if (authorized) {
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: Access GRANTED");
     }
     return 1;
   } else {
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: Access DENIED");
     }
@@ -785,7 +793,7 @@ mysql_authorization_result_t cedar_check(
     g_auth_stats.requests.fetch_add(1, std::memory_order_relaxed);
   }
 
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
         "Cedar authorization callback invoked for user: %s@%s, event: %s, "
@@ -812,7 +820,7 @@ mysql_authorization_result_t cedar_check(
   // discovery probes)
   if (event->requirement_mode ==
       mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE) {
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(
           &plugin_handle, MY_INFORMATION_LEVEL,
           "Cedar authorization: presence check -> GRANT (internal probe)");
@@ -823,7 +831,7 @@ mysql_authorization_result_t cedar_check(
   // Handle zero-privilege checks by allowing them (these are also internal
   // checks)
   if (event->privileges == 0) {
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(
           &plugin_handle, MY_INFORMATION_LEVEL,
           "Cedar authorization: zero-priv check -> GRANT (internal check)");
@@ -836,7 +844,7 @@ mysql_authorization_result_t cedar_check(
       event->event_subclass != MYSQL_AUTHORIZATION_TABLE_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_COLUMN_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS) {
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(
           &plugin_handle, MY_INFORMATION_LEVEL,
           "Cedar authorization: unsupported event type %s, returning IGNORE",
@@ -861,13 +869,13 @@ mysql_authorization_result_t cedar_check(
   }
 
   if (result == -1) {
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: IGNORE");
     }
     return MYSQL_AUTHORIZATION_IGNORE;
   } else if (result == 1) {
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: GRANT");
     }
@@ -876,7 +884,7 @@ mysql_authorization_result_t cedar_check(
     }
     return MYSQL_AUTHORIZATION_GRANT;
   } else {
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: DENY");
     }
@@ -896,7 +904,7 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
   // Save plugin handle for logging first
   plugin_handle = plugin_info;
 
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
         "Cedar authorization plugin initialization starting...");
@@ -916,7 +924,7 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
 
   plugin_initialized = true;
 
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
         "Cedar authorization plugin successfully initialized!");
@@ -930,7 +938,7 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
 
 // Plugin deinitialization
 int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
         "Cedar authorization plugin deinitialization starting...");
@@ -943,7 +951,7 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
   mysql_mutex_destroy(&LOCK_auth_cache);
   auth_cache.clear();
 
-  if (plugin_handle) {
+  if (cedar_should_log_info()) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
         "Cedar authorization plugin successfully deinitialized");
@@ -1035,7 +1043,7 @@ static void cedar_authorization_cache_flush_update(
     auth_cache.clear();
     mysql_mutex_unlock(&LOCK_auth_cache);
 
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Authorization cache flushed");
     }
@@ -1066,7 +1074,7 @@ static void cedar_authorization_reset_stats_update(
     g_auth_stats.total_time_us.store(0, std::memory_order_relaxed);
     g_auth_stats.remote_time_us.store(0, std::memory_order_relaxed);
 
-    if (plugin_handle) {
+    if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Authorization statistics reset");
     }
@@ -1086,6 +1094,11 @@ static MYSQL_SYSVAR_BOOL(
     "Reset authorization statistics (automatically resets to 0)", nullptr,
     cedar_authorization_reset_stats_update, false);
 
+static MYSQL_SYSVAR_BOOL(
+    log_info, cedar_authorization_log_info, PLUGIN_VAR_RQCMDARG,
+    "Enable info-level logging for cedar_authorization (default: disabled)",
+    nullptr, nullptr, false);
+
 // System variables array
 static SYS_VAR *cedar_authorization_system_vars[] = {
     MYSQL_SYSVAR(url),
@@ -1102,6 +1115,7 @@ static SYS_VAR *cedar_authorization_system_vars[] = {
     MYSQL_SYSVAR(cache_flush),
     MYSQL_SYSVAR(collect_stats),
     MYSQL_SYSVAR(reset_stats),
+    MYSQL_SYSVAR(log_info),
     nullptr};
 
 // Status variables - Macro to define show functions for each stat
