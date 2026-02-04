@@ -609,12 +609,25 @@ TEST_F(DDL_audit_server_test, RenameTableLogic) {
     // make_table_uid: if (!db.empty() && !table.empty()) table_id = db + "." +
     // table; else ... table_id = table; So it should be just "t3" and "t4".
 
-    if (call.action == "delete" && call.entity_type == "Table" &&
-        (call.entity_id == "t3" || call.entity_id == ".t3"))
-      found_delete_t3 = true;
-    if (call.action == "upsert" && call.entity_type == "Table" &&
-        (call.entity_id == "t4" || call.entity_id == ".t4"))
-      found_upsert_t4 = true;
+    // Check for t3, possibly with db prefix
+    if (call.action == "delete" && call.entity_type == "Table") {
+       size_t pos = call.entity_id.rfind("t3");
+       if (pos != std::string::npos && pos + 2 == call.entity_id.length()) {
+         if (pos == 0 || call.entity_id[pos-1] == '.') {
+           found_delete_t3 = true;
+         }
+       }
+    }
+    
+    // Check for t4, possibly with db prefix
+    if (call.action == "upsert" && call.entity_type == "Table") {
+       size_t pos = call.entity_id.rfind("t4");
+       if (pos != std::string::npos && pos + 2 == call.entity_id.length()) {
+         if (pos == 0 || call.entity_id[pos-1] == '.') {
+           found_upsert_t4 = true;
+         }
+       }
+    }
   }
 
   EXPECT_TRUE(found_delete_t1) << "Should delete old table db1.t1";

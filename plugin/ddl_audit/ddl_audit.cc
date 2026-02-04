@@ -1024,8 +1024,11 @@ int handle_query_event(MYSQL_THD thd, const void *event) {
       std::string new_db = pair.second.first;
       std::string new_table = pair.second.second;
 
-      std::string old_id = old_db + "." + old_table;
-      std::string new_id = new_db + "." + new_table;
+      std::string old_id = old_table;
+      if (!old_db.empty()) old_id = old_db + "." + old_table;
+      
+      std::string new_id = new_table;
+      if (!new_db.empty()) new_id = new_db + "." + new_table;
 
       if (ddl_audit_plugin) {
         my_plugin_log_message(&ddl_audit_plugin, MY_INFORMATION_LEVEL,
