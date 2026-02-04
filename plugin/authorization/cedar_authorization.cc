@@ -519,7 +519,8 @@ static int check_single_privilege_cedar(
       AuthCacheKey key{
           user_uid_value, resource_identifier, privilege, day, date, fmt_ip};
       std::time_t now = std::time(nullptr);
-      AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
+      AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl,
+                           std::list<AuthCacheKey>::iterator{}};
       int max_per_shard = cedar_authorization_cache_size / kNumShards;
       g_sharded_auth_cache.put(key, entry, max_per_shard);
     }
@@ -531,7 +532,8 @@ static int check_single_privilege_cedar(
       AuthCacheKey key{
           user_uid_value, resource_identifier, privilege, day, date, fmt_ip};
       std::time_t now = std::time(nullptr);
-      AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
+      AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl,
+                           std::list<AuthCacheKey>::iterator{}};
       int max_per_shard = cedar_authorization_cache_size / kNumShards;
       g_sharded_auth_cache.put(key, entry, max_per_shard);
     }
@@ -668,7 +670,7 @@ static int check_single_privilege_cedar(
                             "%s: %s (cURL error: %d)",
                             privilege.c_str(), curl_easy_strerror(res), res);
     if (cedar_authorization_collect_stats) {
-      g_auth_stats.errors.fetch_add(1, std::memory_order_relaxed);
+      get_thread_stats().errors++;
     }
     return -1;  // Signal error (fail-open to IGNORE)
   }
@@ -681,7 +683,7 @@ static int check_single_privilege_cedar(
                             response_code, privilege.c_str(),
                             response.data.c_str());
     if (cedar_authorization_collect_stats) {
-      g_auth_stats.errors.fetch_add(1, std::memory_order_relaxed);
+      get_thread_stats().errors++;
     }
     return -1;  // Signal error (fail-open to IGNORE)
   }
@@ -700,7 +702,7 @@ static int check_single_privilege_cedar(
           "Failed to parse Cedar authorization response for privilege %s: %s",
           privilege.c_str(), parse_errors.c_str());
     if (cedar_authorization_collect_stats) {
-      g_auth_stats.errors.fetch_add(1, std::memory_order_relaxed);
+      get_thread_stats().errors++;
     }
     return -1;  // Signal error (fail-open to IGNORE)
   }
@@ -712,7 +714,7 @@ static int check_single_privilege_cedar(
                             "field for privilege %s",
                             privilege.c_str());
     if (cedar_authorization_collect_stats) {
-      g_auth_stats.errors.fetch_add(1, std::memory_order_relaxed);
+      get_thread_stats().errors++;
     }
     return -1;  // Signal error (fail-open to IGNORE)
   }
@@ -731,7 +733,8 @@ static int check_single_privilege_cedar(
     AuthCacheKey key{user_uid_value, resource_identifier, privilege, day, date,
                      fmt_ip};
     std::time_t now = std::time(nullptr);
-    AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
+    AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl,
+                         std::list<AuthCacheKey>::iterator{}};
     int max_per_shard = cedar_authorization_cache_size / kNumShards;
     g_sharded_auth_cache.put(key, entry, max_per_shard);
   }
@@ -962,7 +965,7 @@ std::string cedar_create_resource_identifier(
 mysql_authorization_result_t cedar_check(
     const mysql_authorization_event *event) {
   if (cedar_authorization_collect_stats) {
-    g_auth_stats.requests.fetch_add(1, std::memory_order_relaxed);
+    get_thread_stats().requests++;
   }
 
   if (cedar_should_log_info()) {
@@ -1031,11 +1034,10 @@ mysql_authorization_result_t cedar_check(
     auto start_total = std::chrono::high_resolution_clock::now();
     result = cedar_check_access_core(event);
     auto end_total = std::chrono::high_resolution_clock::now();
-    g_auth_stats.total_time_us.fetch_add(
+    get_thread_stats().total_time_us +=
         std::chrono::duration_cast<std::chrono::microseconds>(end_total -
                                                               start_total)
-            .count(),
-        std::memory_order_relaxed);
+            .count();
   } else {
     result = cedar_check_access_core(event);
   }
