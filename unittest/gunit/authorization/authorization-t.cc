@@ -349,6 +349,7 @@ TEST_F(CedarPluginInitializedTest, ServerErrorReturnsIgnore) {
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
 
+  cedar_auth_cache_reset();
   cedar_set_authorization_url("http://invalid-url-should-fail");
 
   // The code returns -1 for error, which `cedar_check` maps to
@@ -361,6 +362,7 @@ TEST_F(CedarPluginInitializedTest, StatsIncrements) {
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
 
+  cedar_auth_cache_reset();
   cedar_reset_stats_for_test();
   cedar_set_collect_stats(true);
   cedar_set_authorization_url("http://mock-allow");
@@ -378,6 +380,7 @@ TEST_F(CedarPluginInitializedTest, StatsGating) {
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
 
+  cedar_auth_cache_reset();
   cedar_reset_stats_for_test();
   cedar_set_collect_stats(false);
   cedar_set_authorization_url("http://mock-allow");
@@ -401,6 +404,7 @@ TEST_F(CedarPluginInitializedTest, StatsReset) {
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", 1UL << 0);
 
+  cedar_auth_cache_reset();
   cedar_reset_stats_for_test();
   cedar_set_collect_stats(true);
   cedar_set_authorization_url("http://mock-allow");

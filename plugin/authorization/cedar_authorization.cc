@@ -1129,9 +1129,28 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
    g_sharded_auth_cache.destroy();
 
    // Cleanup stats registry
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+   // For unit tests, don't clear the registry to preserve thread registration.
+   // Just reset the stats values.
+   for (AuthStats* stats : g_stats_registry) {
+     stats->requests = 0;
+     stats->grants = 0;
+     stats->denies = 0;
+     stats->errors = 0;
+     stats->cache_hits = 0;
+     stats->cache_misses = 0;
+     stats->cache_evictions = 0;
+     stats->total_time_us = 0;
+     stats->remote_time_us = 0;
+   }
+  // Don't set g_stats_registry_initialized = false;
+  // Don't clear g_stats_registry;
+  // Don't destroy the mutex;
+#else
    g_stats_registry_initialized = false;
    g_stats_registry.clear();
    mysql_mutex_destroy(&LOCK_stats_registry);
+#endif
 
    // Clear thread-local IP cache
    auth_common::auth_clear_all_client_ip_cache();
