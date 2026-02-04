@@ -3,9 +3,11 @@
 #include "plugin/authorization/authorization_common.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <ctime>
 #include <sstream>
+#include <unordered_map>
 
 #include <json/json.h>
 #include "my_dbug.h"
@@ -15,6 +17,18 @@
 using namespace std;
 
 namespace auth_common {
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+static std::atomic<int64_t> g_client_ip_raw_calls_for_test{0};
+
+int64_t auth_get_client_ip_raw_calls_for_test() {
+  return g_client_ip_raw_calls_for_test.load(std::memory_order_relaxed);
+}
+
+void auth_reset_client_ip_raw_calls_for_test() {
+  g_client_ip_raw_calls_for_test.store(0, std::memory_order_relaxed);
+}
+#endif
 
 std::string auth_event_type_to_string(
     mysql_authorization_event_subclass_t event_type) {
@@ -103,33 +117,46 @@ std::string auth_create_resource_identifier(
   return resource;
 }
 
-std::string auth_get_day() {
-  std::time_t currentTime = std::time(0);
+AuthTimeContext auth_get_time_context() {
+  AuthTimeContext ctx;
+  std::time_t currentTime = std::time(nullptr);
   std::tm *now = std::localtime(&currentTime);
+  
+  // Day (lowercase 3-char)
   char dayString[4];
   std::strftime(dayString, sizeof(dayString), "%a", now);
-  std::string day(dayString);
-  std::transform(day.begin(), day.end(), day.begin(), ::tolower);
-  return day;
+  ctx.day = std::string(dayString);
+  std::transform(ctx.day.begin(), ctx.day.end(), ctx.day.begin(), ::tolower);
+  
+  // Date (YYYYMMDD)
+  char dateString[9];
+  std::strftime(dateString, sizeof(dateString), "%Y%m%d", now);
+  ctx.date = std::stoul(dateString);
+  
+  // Time (HHMMSS)
+  char timeString[7];
+  std::strftime(timeString, sizeof(timeString), "%H%M%S", now);
+  ctx.time = std::stoul(timeString);
+  
+  return ctx;
+}
+
+std::string auth_get_day() {
+  return auth_get_time_context().day;
 }
 
 uint32_t auth_get_date() {
-  std::time_t currentTime = std::time(0);
-  std::tm *now = std::localtime(&currentTime);
-  char dateString[9];
-  std::strftime(dateString, sizeof(dateString), "%Y%m%d", now);
-  return std::stoul(dateString);
+  return auth_get_time_context().date;
 }
 
 uint32_t auth_get_time() {
-  std::time_t currentTime = std::time(0);
-  std::tm *now = std::localtime(&currentTime);
-  char timeString[7];
-  std::strftime(timeString, sizeof(timeString), "%H%M%S", now);
-  return std::stoul(timeString);
+  return auth_get_time_context().time;
 }
 
 std::string auth_get_client_ip(THD *thd) {
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  g_client_ip_raw_calls_for_test.fetch_add(1, std::memory_order_relaxed);
+#endif
   if (!thd || !thd->get_protocol_classic()) {
     return "unknown";
   }
@@ -143,6 +170,37 @@ std::string auth_get_client_ip(THD *thd) {
     return std::string(ip);
   }
   return "unknown";
+}
+
+// Thread-local cache for client IPs keyed by THD pointer
+// Using thread_local to avoid mutex contention
+static thread_local std::unordered_map<THD*, std::string> t_client_ip_cache;
+
+std::string auth_get_client_ip_cached(THD *thd) {
+  if (!thd) {
+    return "unknown";
+  }
+  
+  // Check cache first
+  auto it = t_client_ip_cache.find(thd);
+  if (it != t_client_ip_cache.end()) {
+    return it->second;
+  }
+  
+  // Cache miss - do the actual lookup
+  std::string ip = auth_get_client_ip(thd);
+  t_client_ip_cache[thd] = ip;
+  return ip;
+}
+
+void auth_clear_client_ip_cache(THD *thd) {
+  if (thd) {
+    t_client_ip_cache.erase(thd);
+  }
+}
+
+void auth_clear_all_client_ip_cache() {
+  t_client_ip_cache.clear();
 }
 
 std::string auth_get_primary_action(unsigned long privileges) {

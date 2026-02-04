@@ -140,18 +140,48 @@ using namespace std;
 
 // Statistics structure
 struct AuthStats {
-  std::atomic<int64_t> requests{0};
-  std::atomic<int64_t> grants{0};
-  std::atomic<int64_t> denies{0};
-  std::atomic<int64_t> errors{0};
-  std::atomic<int64_t> cache_hits{0};
-  std::atomic<int64_t> cache_misses{0};
-  std::atomic<int64_t> cache_evictions{0};
-  std::atomic<int64_t> total_time_us{0};
-  std::atomic<int64_t> remote_time_us{0};
+  int64_t requests{0};
+  int64_t grants{0};
+  int64_t denies{0};
+  int64_t errors{0};
+  int64_t cache_hits{0};
+  int64_t cache_misses{0};
+  int64_t cache_evictions{0};
+  int64_t total_time_us{0};
+  int64_t remote_time_us{0};
 };
 
-static AuthStats g_auth_stats;
+// Thread-local stats for reduced contention
+static thread_local AuthStats t_auth_stats;
+
+// Registry for aggregating all thread-local stats
+// Protected by mutex, only accessed on SHOW STATUS (not hot path)
+static mysql_mutex_t LOCK_stats_registry;
+static std::vector<AuthStats*> g_stats_registry;
+static bool g_stats_registry_initialized = false;
+
+// Register current thread's stats (called on first use)
+static AuthStats& get_thread_stats() {
+  static thread_local bool registered = false;
+  if (!registered && g_stats_registry_initialized) {
+    mysql_mutex_lock(&LOCK_stats_registry);
+    g_stats_registry.push_back(&t_auth_stats);
+    mysql_mutex_unlock(&LOCK_stats_registry);
+    registered = true;
+  }
+  return t_auth_stats;
+}
+
+// Aggregate all thread-local stats
+static int64_t aggregate_stat(int64_t AuthStats::*member) {
+  int64_t total = 0;
+  mysql_mutex_lock(&LOCK_stats_registry);
+  for (AuthStats* stats : g_stats_registry) {
+    total += stats->*member;
+  }
+  mysql_mutex_unlock(&LOCK_stats_registry);
+  return total;
+}
 
 // Plugin system variables
 static char *cedar_authorization_url;
@@ -180,6 +210,7 @@ static bool cedar_authorization_reset_stats = false;
 static bool cedar_authorization_log_info = false;
 
 // Cache implementation
+#include <list>
 #include <mutex>
 #include <unordered_map>
 
@@ -202,6 +233,7 @@ struct AuthCacheKey {
 struct AuthCacheEntry {
   int result;  // -1 (IGNORE), 0 (DENY), 1 (GRANT)
   std::time_t expires;
+  std::list<AuthCacheKey>::iterator lru_iter;  // For O(1) LRU operations
 };
 
 struct AuthCacheKeyHash {
@@ -217,9 +249,121 @@ struct AuthCacheKeyHash {
   }
 };
 
-static std::unordered_map<AuthCacheKey, AuthCacheEntry, AuthCacheKeyHash>
-    auth_cache;
-static mysql_mutex_t LOCK_auth_cache;
+// Sharded cache for reduced mutex contention
+static constexpr size_t kNumShards = 64;
+static constexpr size_t kShardShift = 64 - 6;  // log2(64) = 6
+
+struct alignas(64) CacheShard {
+  mysql_mutex_t mutex;
+  std::unordered_map<AuthCacheKey, AuthCacheEntry, AuthCacheKeyHash> entries;
+  std::list<AuthCacheKey> lru_list;  // Front = most recent, back = oldest
+  // Padding to fill cache line and prevent false sharing
+  char padding[64 - sizeof(mysql_mutex_t) % 64];
+};
+
+class ShardedAuthCache {
+ public:
+  void init() {
+    for (size_t i = 0; i < kNumShards; ++i) {
+      mysql_mutex_init(0, &shards_[i].mutex, MY_MUTEX_INIT_FAST);
+    }
+  }
+
+  void destroy() {
+    for (size_t i = 0; i < kNumShards; ++i) {
+      mysql_mutex_destroy(&shards_[i].mutex);
+    }
+  }
+
+  bool get(const AuthCacheKey &key, AuthCacheEntry &entry) {
+    size_t shard_idx = get_shard_index(key);
+    CacheShard &shard = shards_[shard_idx];
+
+    mysql_mutex_lock(&shard.mutex);
+    auto it = shard.entries.find(key);
+    if (it != shard.entries.end()) {
+      std::time_t now = std::time(nullptr);
+      if (now < it->second.expires) {
+        // Move to front of LRU list (O(1) with splice, no allocation)
+        shard.lru_list.splice(shard.lru_list.begin(), shard.lru_list,
+                              it->second.lru_iter);
+        entry = it->second;
+        mysql_mutex_unlock(&shard.mutex);
+        return true;
+      } else {
+        // Expired - remove from LRU list and map
+        shard.lru_list.erase(it->second.lru_iter);
+        shard.entries.erase(it);
+      }
+    }
+    mysql_mutex_unlock(&shard.mutex);
+    return false;
+  }
+
+  void put(const AuthCacheKey &key, const AuthCacheEntry &entry,
+           int max_per_shard) {
+    size_t shard_idx = get_shard_index(key);
+    CacheShard &shard = shards_[shard_idx];
+
+    mysql_mutex_lock(&shard.mutex);
+    // Check if key already exists
+    auto existing = shard.entries.find(key);
+    if (existing != shard.entries.end()) {
+      // Update existing entry, move to front of LRU
+      shard.lru_list.splice(shard.lru_list.begin(), shard.lru_list,
+                            existing->second.lru_iter);
+      existing->second.result = entry.result;
+      existing->second.expires = entry.expires;
+      mysql_mutex_unlock(&shard.mutex);
+      return;
+    }
+
+    // Evict oldest entry if shard is full
+    while (static_cast<int>(shard.entries.size()) >= max_per_shard &&
+           !shard.lru_list.empty()) {
+      // Remove oldest (back of list)
+      const AuthCacheKey &oldest_key = shard.lru_list.back();
+      shard.entries.erase(oldest_key);
+      shard.lru_list.pop_back();
+    }
+
+    // Insert new entry at front of LRU list
+    shard.lru_list.push_front(key);
+    AuthCacheEntry new_entry = entry;
+    new_entry.lru_iter = shard.lru_list.begin();
+    shard.entries[key] = new_entry;
+    mysql_mutex_unlock(&shard.mutex);
+  }
+
+  void clear() {
+    for (size_t i = 0; i < kNumShards; ++i) {
+      mysql_mutex_lock(&shards_[i].mutex);
+      shards_[i].entries.clear();
+      shards_[i].lru_list.clear();
+      mysql_mutex_unlock(&shards_[i].mutex);
+    }
+  }
+
+  size_t size() {
+    size_t total = 0;
+    for (size_t i = 0; i < kNumShards; ++i) {
+      mysql_mutex_lock(&shards_[i].mutex);
+      total += shards_[i].entries.size();
+      mysql_mutex_unlock(&shards_[i].mutex);
+    }
+    return total;
+  }
+
+ private:
+  size_t get_shard_index(const AuthCacheKey &key) {
+    return AuthCacheKeyHash{}(key) >> kShardShift;
+  }
+
+  CacheShard shards_[kNumShards];
+};
+
+// Sharded cache instance
+static ShardedAuthCache g_sharded_auth_cache;
 
 // Plugin initialization flag
 static bool plugin_initialized = false;
@@ -233,6 +377,67 @@ static inline bool cedar_should_log_info() {
 // Helper structure for HTTP response
 struct HttpResponse {
   std::string data;
+};
+
+// Thread-local CURL handle pool for connection reuse
+class CurlHandlePool {
+ public:
+  // Acquire a CURL handle (from pool or new)
+  static CURL* acquire() {
+    auto& pool = get_thread_pool();
+    if (!pool.empty()) {
+      CURL* handle = pool.back();
+      pool.pop_back();
+      return handle;
+    }
+    return curl_easy_init();
+  }
+
+  // Release a CURL handle back to the pool
+  static void release(CURL* handle) {
+    if (handle) {
+      curl_easy_reset(handle);  // Clear options, keep connection
+      get_thread_pool().push_back(handle);
+    }
+  }
+
+  // Cleanup all handles in current thread's pool
+  static void cleanup_thread() {
+    auto& pool = get_thread_pool();
+    for (CURL* handle : pool) {
+      if (handle) {
+        curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, 100);  // Short timeout for cleanup
+        curl_easy_cleanup(handle);
+      }
+    }
+    pool.clear();
+  }
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+  static size_t pool_size_for_test() { return get_thread_pool().size(); }
+#endif
+
+ private:
+  static std::vector<CURL*>& get_thread_pool() {
+    thread_local std::vector<CURL*> pool;
+    return pool;
+  }
+};
+
+// RAII wrapper for automatic handle management
+class ScopedCurlHandle {
+ public:
+  ScopedCurlHandle() : handle_(CurlHandlePool::acquire()) {}
+  ~ScopedCurlHandle() { CurlHandlePool::release(handle_); }
+
+  ScopedCurlHandle(const ScopedCurlHandle&) = delete;
+  ScopedCurlHandle& operator=(const ScopedCurlHandle&) = delete;
+
+  CURL* get() const { return handle_; }
+  explicit operator bool() const { return handle_ != nullptr; }
+
+ private:
+  CURL* handle_;
 };
 
 // Callback function for libcurl to write response data
@@ -272,36 +477,23 @@ static int check_single_privilege_cedar(
   if (cedar_authorization_cache_enabled) {
     AuthCacheKey key{user_uid_value, resource_identifier, privilege, day, date,
                      fmt_ip};
-    std::time_t now = std::time(nullptr);
 
-    mysql_mutex_lock(&LOCK_auth_cache);
-    auto it = auth_cache.find(key);
-    if (it != auth_cache.end()) {
-      if (now < it->second.expires) {
-        int result = it->second.result;
-        mysql_mutex_unlock(&LOCK_auth_cache);
-        if (cedar_authorization_collect_stats) {
-          g_auth_stats.cache_hits.fetch_add(1, std::memory_order_relaxed);
-        }
-        if (cedar_should_log_info()) {
-          my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                                "Cache hit for privilege %s: %d",
-                                privilege.c_str(), result);
-        }
-        return result;
-      } else {
-        // Expired
-        auth_cache.erase(it);
-        if (cedar_authorization_collect_stats) {
-          g_auth_stats.cache_misses.fetch_add(1, std::memory_order_relaxed);
-        }
-      }
-    } else {
-      if (cedar_authorization_collect_stats) {
-        g_auth_stats.cache_misses.fetch_add(1, std::memory_order_relaxed);
-      }
-    }
-    mysql_mutex_unlock(&LOCK_auth_cache);
+     AuthCacheEntry entry;
+     if (g_sharded_auth_cache.get(key, entry)) {
+       if (cedar_authorization_collect_stats) {
+         get_thread_stats().cache_hits++;
+       }
+       if (cedar_should_log_info()) {
+         my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                               "Cache hit for privilege %s: %d",
+                               privilege.c_str(), entry.result);
+       }
+       return entry.result;
+     } else {
+       if (cedar_authorization_collect_stats) {
+         get_thread_stats().cache_misses++;
+       }
+     }
   } else {
     // Cache disabled counts as miss? Or just ignore?
     // pg_authorization counts misses if cache lookup fails.
@@ -328,9 +520,8 @@ static int check_single_privilege_cedar(
           user_uid_value, resource_identifier, privilege, day, date, fmt_ip};
       std::time_t now = std::time(nullptr);
       AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
-      mysql_mutex_lock(&LOCK_auth_cache);
-      auth_cache[key] = entry;
-      mysql_mutex_unlock(&LOCK_auth_cache);
+      int max_per_shard = cedar_authorization_cache_size / kNumShards;
+      g_sharded_auth_cache.put(key, entry, max_per_shard);
     }
     return result;
   }
@@ -341,21 +532,21 @@ static int check_single_privilege_cedar(
           user_uid_value, resource_identifier, privilege, day, date, fmt_ip};
       std::time_t now = std::time(nullptr);
       AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
-      mysql_mutex_lock(&LOCK_auth_cache);
-      auth_cache[key] = entry;
-      mysql_mutex_unlock(&LOCK_auth_cache);
+      int max_per_shard = cedar_authorization_cache_size / kNumShards;
+      g_sharded_auth_cache.put(key, entry, max_per_shard);
     }
     return result;
   }
 #endif
 
-  // Initialize libcurl
-  CURL *curl = curl_easy_init();
+  // Acquire pooled CURL handle
+  ScopedCurlHandle scoped_curl;
+  CURL *curl = scoped_curl.get();
   if (!curl) {
     if (plugin_handle) {
       my_plugin_log_message(
           &plugin_handle, MY_ERROR_LEVEL,
-          "Failed to initialize libcurl for Cedar authorization");
+          "Failed to acquire CURL handle for Cedar authorization");
     }
     return -1;
   }
@@ -441,21 +632,19 @@ static int check_single_privilege_cedar(
     }
   }
 
-  // Perform the request
-  CURLcode res;
-  if (cedar_authorization_collect_stats) {
-    auto start_remote = std::chrono::high_resolution_clock::now();
-    res = curl_easy_perform(curl);
-    auto end_remote = std::chrono::high_resolution_clock::now();
-    g_auth_stats.remote_time_us.fetch_add(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_remote -
-                                                              start_remote)
-            .count(),
-        std::memory_order_relaxed);
-  } else {
-    // If stats disabled, just perform without timing
-    res = curl_easy_perform(curl);
-  }
+   // Perform the request
+   CURLcode res;
+   if (cedar_authorization_collect_stats) {
+     auto start_remote = std::chrono::high_resolution_clock::now();
+     res = curl_easy_perform(curl);
+     auto end_remote = std::chrono::high_resolution_clock::now();
+     get_thread_stats().remote_time_us +=
+         std::chrono::duration_cast<std::chrono::microseconds>(end_remote -
+                                                               start_remote)
+             .count();
+   } else {
+     res = curl_easy_perform(curl);
+   }
 
   long response_code;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
@@ -470,9 +659,7 @@ static int check_single_privilege_cedar(
                           "Response body: %s", response.data.c_str());
   }
 
-  // Cleanup
   curl_slist_free_all(headers);
-  curl_easy_cleanup(curl);
 
   if (res != CURLE_OK) {
     if (plugin_handle)
@@ -545,24 +732,8 @@ static int check_single_privilege_cedar(
                      fmt_ip};
     std::time_t now = std::time(nullptr);
     AuthCacheEntry entry{result, now + cedar_authorization_cache_ttl};
-
-    mysql_mutex_lock(&LOCK_auth_cache);
-    // Simple eviction if full: clear half the cache or just one?
-    // For now, if we exceed size, we just clear it all to be safe and simple.
-    if (auth_cache.size() >= (size_t)cedar_authorization_cache_size) {
-      if (cedar_should_log_info()) {
-        my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                              "Cache full, clearing %zu entries",
-                              auth_cache.size());
-      }
-      if (cedar_authorization_collect_stats) {
-        g_auth_stats.cache_evictions.fetch_add(auth_cache.size(),
-                                               std::memory_order_relaxed);
-      }
-      auth_cache.clear();
-    }
-    auth_cache[key] = entry;
-    mysql_mutex_unlock(&LOCK_auth_cache);
+    int max_per_shard = cedar_authorization_cache_size / kNumShards;
+    g_sharded_auth_cache.put(key, entry, max_per_shard);
   }
 
   return result;
@@ -619,10 +790,11 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
   }
 
   // Get context information
-  std::string day = auth_common::auth_get_day();
-  auto date = auth_common::auth_get_date();
-  auto fmt_time = auth_common::auth_get_time();
-  std::string client_ip = auth_common::auth_get_client_ip(event->thd);
+  auto time_ctx = auth_common::auth_get_time_context();
+  std::string day = time_ctx.day;
+  uint32_t date = time_ctx.date;
+  uint32_t fmt_time = time_ctx.time;
+   std::string client_ip = auth_common::auth_get_client_ip_cached(event->thd);
 
   if (cedar_should_log_info()) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -879,18 +1051,18 @@ mysql_authorization_result_t cedar_check(
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: GRANT");
     }
-    if (cedar_authorization_collect_stats) {
-      g_auth_stats.grants.fetch_add(1, std::memory_order_relaxed);
-    }
-    return MYSQL_AUTHORIZATION_GRANT;
-  } else {
-    if (cedar_should_log_info()) {
-      my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                            "Cedar authorization: DENY");
-    }
-    if (cedar_authorization_collect_stats) {
-      g_auth_stats.denies.fetch_add(1, std::memory_order_relaxed);
-    }
+     if (cedar_authorization_collect_stats) {
+       get_thread_stats().grants++;
+     }
+     return MYSQL_AUTHORIZATION_GRANT;
+   } else {
+     if (cedar_should_log_info()) {
+       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
+                             "Cedar authorization: DENY");
+     }
+     if (cedar_authorization_collect_stats) {
+       get_thread_stats().denies++;
+     }
     return MYSQL_AUTHORIZATION_DENY;
   }
 }
@@ -919,10 +1091,14 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
     return 1;
   }
 
-  // Initialize cache mutex
-  mysql_mutex_init(0, &LOCK_auth_cache, MY_MUTEX_INIT_FAST);
+   // Initialize sharded cache
+   g_sharded_auth_cache.init();
 
-  plugin_initialized = true;
+   // Initialize stats registry
+   mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
+   g_stats_registry_initialized = true;
+
+   plugin_initialized = true;
 
   if (cedar_should_log_info()) {
     my_plugin_log_message(
@@ -944,12 +1120,19 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
         "Cedar authorization plugin deinitialization starting...");
   }
 
-  plugin_initialized = false;
-  curl_global_cleanup();
+   plugin_initialized = false;
+   curl_global_cleanup();
 
-  // Destroy cache mutex and clear cache
-  mysql_mutex_destroy(&LOCK_auth_cache);
-  auth_cache.clear();
+   // Destroy sharded cache
+   g_sharded_auth_cache.destroy();
+
+   // Cleanup stats registry
+   g_stats_registry_initialized = false;
+   g_stats_registry.clear();
+   mysql_mutex_destroy(&LOCK_stats_registry);
+
+   // Clear thread-local IP cache
+   auth_common::auth_clear_all_client_ip_cache();
 
   if (cedar_should_log_info()) {
     my_plugin_log_message(
@@ -1039,9 +1222,7 @@ static void cedar_authorization_cache_flush_update(
   bool new_val = *static_cast<const bool *>(save);
   if (new_val) {
     // Flush the cache
-    mysql_mutex_lock(&LOCK_auth_cache);
-    auth_cache.clear();
-    mysql_mutex_unlock(&LOCK_auth_cache);
+    g_sharded_auth_cache.clear();
 
     if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -1064,15 +1245,19 @@ static void cedar_authorization_reset_stats_update(
     void *var_ptr [[maybe_unused]], const void *save) {
   bool new_val = *static_cast<const bool *>(save);
   if (new_val) {
-    g_auth_stats.requests.store(0, std::memory_order_relaxed);
-    g_auth_stats.grants.store(0, std::memory_order_relaxed);
-    g_auth_stats.denies.store(0, std::memory_order_relaxed);
-    g_auth_stats.errors.store(0, std::memory_order_relaxed);
-    g_auth_stats.cache_hits.store(0, std::memory_order_relaxed);
-    g_auth_stats.cache_misses.store(0, std::memory_order_relaxed);
-    g_auth_stats.cache_evictions.store(0, std::memory_order_relaxed);
-    g_auth_stats.total_time_us.store(0, std::memory_order_relaxed);
-    g_auth_stats.remote_time_us.store(0, std::memory_order_relaxed);
+    mysql_mutex_lock(&LOCK_stats_registry);
+    for (AuthStats* stats : g_stats_registry) {
+      stats->requests = 0;
+      stats->grants = 0;
+      stats->denies = 0;
+      stats->errors = 0;
+      stats->cache_hits = 0;
+      stats->cache_misses = 0;
+      stats->cache_evictions = 0;
+      stats->total_time_us = 0;
+      stats->remote_time_us = 0;
+    }
+    mysql_mutex_unlock(&LOCK_stats_registry);
 
     if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -1121,7 +1306,7 @@ static SYS_VAR *cedar_authorization_system_vars[] = {
 // Status variables - Macro to define show functions for each stat
 #define DEF_SHOW_STAT(name, stat_member)                                      \
   static int show_auth_##name(MYSQL_THD, SHOW_VAR *var, char *buff) {         \
-    int64_t value = g_auth_stats.stat_member.load(std::memory_order_relaxed); \
+    int64_t value = aggregate_stat(&AuthStats::stat_member);                  \
     memcpy(buff, &value, sizeof(value));                                      \
     var->type = SHOW_LONGLONG;                                                \
     var->value = buff;                                                        \
@@ -1181,16 +1366,11 @@ mysql_declare_plugin(cedar_authorization){
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 void cedar_auth_cache_reset() {
-  mysql_mutex_lock(&LOCK_auth_cache);
-  auth_cache.clear();
-  mysql_mutex_unlock(&LOCK_auth_cache);
+  g_sharded_auth_cache.clear();
 }
 
 size_t cedar_auth_cache_size() {
-  mysql_mutex_lock(&LOCK_auth_cache);
-  size_t s = auth_cache.size();
-  mysql_mutex_unlock(&LOCK_auth_cache);
-  return s;
+  return g_sharded_auth_cache.size();
 }
 
 void cedar_set_authorization_url(const char *url) {
@@ -1202,28 +1382,81 @@ void cedar_set_cache_enabled(bool enabled) {
   cedar_authorization_cache_enabled = enabled;
 }
 
+void cedar_set_cache_size_for_test(int size) {
+  cedar_authorization_cache_size = size;
+}
+
+void cedar_set_cache_ttl_for_test(int ttl_seconds) {
+  cedar_authorization_cache_ttl = ttl_seconds;
+}
+
+size_t cedar_cache_key_shard_index_for_test(const char *user,
+                                            const char *resource,
+                                            const char *action,
+                                            const char *day, uint32_t date,
+                                            const char *ip) {
+  AuthCacheKey key{std::string(user ? user : ""),
+                   std::string(resource ? resource : ""),
+                   std::string(action ? action : ""),
+                   std::string(day ? day : ""),
+                   date,
+                   std::string(ip ? ip : "")};
+  uint64_t h = static_cast<uint64_t>(AuthCacheKeyHash{}(key));
+  return static_cast<size_t>(h >> kShardShift);
+}
+
+bool cedar_cache_contains_for_test(const char *user, const char *resource,
+                                  const char *action, const char *day,
+                                  uint32_t date, const char *ip) {
+  AuthCacheKey key{std::string(user ? user : ""),
+                   std::string(resource ? resource : ""),
+                   std::string(action ? action : ""),
+                   std::string(day ? day : ""),
+                   date,
+                   std::string(ip ? ip : "")};
+  AuthCacheEntry entry;
+  return g_sharded_auth_cache.get(key, entry);
+}
+
 // Stats testing helpers
 int64_t cedar_get_auth_stat_requests() {
-  return g_auth_stats.requests.load(std::memory_order_relaxed);
+  return aggregate_stat(&AuthStats::requests);
 }
 int64_t cedar_get_auth_stat_grants() {
-  return g_auth_stats.grants.load(std::memory_order_relaxed);
+  return aggregate_stat(&AuthStats::grants);
 }
 int64_t cedar_get_auth_stat_denies() {
-  return g_auth_stats.denies.load(std::memory_order_relaxed);
+  return aggregate_stat(&AuthStats::denies);
 }
 void cedar_reset_stats_for_test() {
-  g_auth_stats.requests.store(0, std::memory_order_relaxed);
-  g_auth_stats.grants.store(0, std::memory_order_relaxed);
-  g_auth_stats.denies.store(0, std::memory_order_relaxed);
-  g_auth_stats.errors.store(0, std::memory_order_relaxed);
-  g_auth_stats.cache_hits.store(0, std::memory_order_relaxed);
-  g_auth_stats.cache_misses.store(0, std::memory_order_relaxed);
-  g_auth_stats.cache_evictions.store(0, std::memory_order_relaxed);
-  g_auth_stats.total_time_us.store(0, std::memory_order_relaxed);
-  g_auth_stats.remote_time_us.store(0, std::memory_order_relaxed);
+  mysql_mutex_lock(&LOCK_stats_registry);
+  for (AuthStats* stats : g_stats_registry) {
+    stats->requests = 0;
+    stats->grants = 0;
+    stats->denies = 0;
+    stats->errors = 0;
+    stats->cache_hits = 0;
+    stats->cache_misses = 0;
+    stats->cache_evictions = 0;
+    stats->total_time_us = 0;
+    stats->remote_time_us = 0;
+  }
+  mysql_mutex_unlock(&LOCK_stats_registry);
 }
 void cedar_set_collect_stats(bool enable) {
   cedar_authorization_collect_stats = enable;
 }
+
+size_t cedar_test_curl_pool_size() { return CurlHandlePool::pool_size_for_test(); }
+
+uintptr_t cedar_test_curl_acquire_handle() {
+  CURL *h = CurlHandlePool::acquire();
+  return reinterpret_cast<uintptr_t>(h);
+}
+
+void cedar_test_curl_release_handle(uintptr_t handle) {
+  CurlHandlePool::release(reinterpret_cast<CURL *>(handle));
+}
+
+void cedar_test_curl_cleanup_thread() { CurlHandlePool::cleanup_thread(); }
 #endif

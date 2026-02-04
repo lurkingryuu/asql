@@ -56,7 +56,33 @@ std::string auth_create_resource_identifier(
 std::string auth_get_day();
 uint32_t auth_get_date();
 uint32_t auth_get_time();
+
+// Unified time context to avoid multiple syscalls
+struct AuthTimeContext {
+  std::string day;   // 3-char lowercase (mon, tue, etc.)
+  uint32_t date;     // YYYYMMDD format
+  uint32_t time;     // HHMMSS format
+};
+
+// Get all time values with single syscall
+AuthTimeContext auth_get_time_context();
+
 std::string auth_get_client_ip(THD *thd);
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+// Test-only counters to validate caching behavior.
+int64_t auth_get_client_ip_raw_calls_for_test();
+void auth_reset_client_ip_raw_calls_for_test();
+#endif
+
+// Cached client IP lookup (once per THD)
+std::string auth_get_client_ip_cached(THD *thd);
+
+// Clear cached IP for a THD (call when THD is recycled)
+void auth_clear_client_ip_cache(THD *thd);
+
+// Clear all cached IPs (for plugin deinit)
+void auth_clear_all_client_ip_cache();
 
 // Privilege helpers
 std::string auth_get_primary_action(unsigned long privileges);

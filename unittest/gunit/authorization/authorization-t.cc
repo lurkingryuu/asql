@@ -3,8 +3,11 @@
 
 #include <gtest/gtest.h>
 #include <json/json.h>
+#include <array>
+#include <cctype>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "include/mysql/plugin_authorization.h"
 #include "plugin/authorization/authorization_common.h"
@@ -48,6 +51,17 @@ TEST_F(AuthorizationHelpersTest, PrivilegesPrimaryAction) {
   EXPECT_EQ(auth_get_primary_action(1UL << 25), "CREATE USER");
 }
 
+TEST_F(AuthorizationHelpersTest, TimeContextFormats) {
+  AuthTimeContext ctx = auth_get_time_context();
+  ASSERT_EQ(ctx.day.size(), 3U);
+  for (char c : ctx.day) {
+    EXPECT_TRUE(std::islower(static_cast<unsigned char>(c)));
+  }
+  EXPECT_GE(ctx.date, 19700101U);
+  EXPECT_LE(ctx.date, 29991231U);
+  EXPECT_LE(ctx.time, 235959U);
+}
+
 TEST_F(AuthorizationServerTest, BuildIdentifiers) {
   mysql_authorization_event ev{};
   const char *user = "alice";
@@ -76,6 +90,21 @@ TEST_F(AuthorizationServerTest, ClientIpUnknownInUnitTest) {
   EXPECT_FALSE(ip.empty());
 }
 
+TEST_F(AuthorizationServerTest, ClientIpCachedCallsRawOncePerTHD) {
+  THD *t = parse_query("SELECT 1");
+  auth_clear_all_client_ip_cache();
+  auth_reset_client_ip_raw_calls_for_test();
+
+  std::string ip1 = auth_get_client_ip_cached(t);
+  std::string ip2 = auth_get_client_ip_cached(t);
+  EXPECT_EQ(ip1, ip2);
+  EXPECT_EQ(auth_get_client_ip_raw_calls_for_test(), 1);
+
+  auth_clear_client_ip_cache(t);
+  (void)auth_get_client_ip_cached(t);
+  EXPECT_EQ(auth_get_client_ip_raw_calls_for_test(), 2);
+}
+
 // Fixture that initializes and deinitializes the cedar plugin
 class CedarPluginInitializedTest : public ::testing::Test {
  protected:
@@ -85,6 +114,23 @@ class CedarPluginInitializedTest : public ::testing::Test {
     (void)cedar_authorization_deinit(nullptr);
   }
 };
+
+static std::vector<std::string> find_users_same_shard(
+    size_t want_count, const std::string &resource, const std::string &action,
+    const std::string &day, uint32_t date, const std::string &ip) {
+  std::array<std::vector<std::string>, 64> per_shard;
+  for (int i = 0; i < 200000; ++i) {
+    std::string user = "user_" + std::to_string(i);
+    size_t shard = cedar_cache_key_shard_index_for_test(
+        user.c_str(), resource.c_str(), action.c_str(), day.c_str(), date,
+        ip.c_str());
+    if (shard >= per_shard.size()) continue;
+    auto &bucket = per_shard[shard];
+    if (bucket.size() < want_count) bucket.push_back(user);
+    if (bucket.size() == want_count) return bucket;
+  }
+  return {};
+}
 
 // Helper to build a minimal authorization event
 static void fill_basic_table_event(mysql_authorization_event &ev,
@@ -180,23 +226,80 @@ TEST_F(CedarPluginInitializedTest, CacheReset) {
   EXPECT_EQ(cedar_auth_cache_size(), 0U);
 }
 
-TEST_F(CedarPluginInitializedTest, CacheEviction) {
+TEST_F(CedarPluginInitializedTest, CacheLRUEvictionWithinShard) {
   cedar_auth_cache_reset();
   cedar_set_authorization_url("http://mock-allow");
 
-  // We can't easily change the global GUC `cedar_authorization_cache_size` from
-  // here without more complex mocking, but we can verify the logic if we assume
-  // a small size or just run many insertions. For this test, let's just ensure
-  // multiple entries can coexist.
+  cedar_set_cache_enabled(true);
+  cedar_set_cache_size_for_test(128);  // 2 entries per shard
+  cedar_set_cache_ttl_for_test(3600);
 
-  for (int i = 0; i < 5; ++i) {
-    mysql_authorization_event ev{};
-    std::string user = "alice" + std::to_string(i);
-    fill_basic_table_event(ev, user.c_str(), "test", "users", 1UL << 0);
-    (void)cedar_check(&ev);
-  }
+  AuthTimeContext time_ctx = auth_get_time_context();
+  const std::string day = time_ctx.day;
+  const uint32_t date = time_ctx.date;
+  const std::string ip = "unknown";
 
-  EXPECT_EQ(cedar_auth_cache_size(), 5U);
+  mysql_authorization_event base{};
+  fill_basic_table_event(base, "seed", "test", "users", 1UL << 0);
+  const std::string resource = auth_create_resource_identifier(&base, "");
+  const std::string action = "SELECT";
+
+  std::vector<std::string> users =
+      find_users_same_shard(3, resource, action, day, date, ip);
+  ASSERT_EQ(users.size(), 3U);
+
+  const std::string user_a = users[0];
+  const std::string user_b = users[1];
+  const std::string user_c = users[2];
+
+  mysql_authorization_event ev{};
+
+  // Insert A then B into the same shard.
+  fill_basic_table_event(ev, user_a.c_str(), "test", "users", 1UL << 0);
+  EXPECT_EQ(cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  fill_basic_table_event(ev, user_b.c_str(), "test", "users", 1UL << 0);
+  EXPECT_EQ(cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  EXPECT_EQ(cedar_auth_cache_size(), 2U);
+
+  // Touch A to make it most-recently-used.
+  fill_basic_table_event(ev, user_a.c_str(), "test", "users", 1UL << 0);
+  EXPECT_EQ(cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  EXPECT_EQ(cedar_auth_cache_size(), 2U);
+
+  // Insert C; shard capacity is 2, so B should be evicted.
+  fill_basic_table_event(ev, user_c.c_str(), "test", "users", 1UL << 0);
+  EXPECT_EQ(cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  EXPECT_EQ(cedar_auth_cache_size(), 2U);
+
+  EXPECT_TRUE(cedar_cache_contains_for_test(user_a.c_str(), resource.c_str(),
+                                           action.c_str(), day.c_str(), date,
+                                           ip.c_str()));
+  EXPECT_FALSE(cedar_cache_contains_for_test(user_b.c_str(), resource.c_str(),
+                                            action.c_str(), day.c_str(), date,
+                                            ip.c_str()));
+  EXPECT_TRUE(cedar_cache_contains_for_test(user_c.c_str(), resource.c_str(),
+                                           action.c_str(), day.c_str(), date,
+                                           ip.c_str()));
+}
+
+TEST_F(CedarPluginInitializedTest, CurlPoolReusesHandleWithinThread) {
+  cedar_test_curl_cleanup_thread();
+  EXPECT_EQ(cedar_test_curl_pool_size(), 0U);
+
+  uintptr_t h1 = cedar_test_curl_acquire_handle();
+  ASSERT_NE(h1, 0U);
+  EXPECT_EQ(cedar_test_curl_pool_size(), 0U);
+
+  cedar_test_curl_release_handle(h1);
+  EXPECT_EQ(cedar_test_curl_pool_size(), 1U);
+
+  uintptr_t h2 = cedar_test_curl_acquire_handle();
+  EXPECT_EQ(h2, h1);
+  cedar_test_curl_release_handle(h2);
+  EXPECT_EQ(cedar_test_curl_pool_size(), 1U);
+
+  cedar_test_curl_cleanup_thread();
+  EXPECT_EQ(cedar_test_curl_pool_size(), 0U);
 }
 
 TEST_F(CedarPluginInitializedTest, DenyFlow) {
