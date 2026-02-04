@@ -111,6 +111,7 @@ class CedarPluginInitializedTest : public ::testing::Test {
   void SetUp() override { (void)cedar_authorization_init(nullptr); }
   void TearDown() override {
     cedar_set_authorization_url(nullptr);
+    cedar_set_enable_column_access_for_test(false);
     (void)cedar_authorization_deinit(nullptr);
   }
 };
@@ -144,6 +145,24 @@ static void fill_basic_table_event(mysql_authorization_event &ev,
   ev.table.str = const_cast<char *>(table);
   ev.table.length = (unsigned long)strlen(table);
   ev.event_subclass = MYSQL_AUTHORIZATION_TABLE_ACCESS;
+  ev.privileges = priv_mask;
+  ev.requirement_mode = mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF;
+}
+
+static void fill_basic_column_event(mysql_authorization_event &ev,
+                                   const char *user, const char *db,
+                                   const char *table, const char *column,
+                                   unsigned long priv_mask) {
+  memset(&ev, 0, sizeof(ev));
+  ev.user.str = const_cast<char *>(user);
+  ev.user.length = (unsigned long)strlen(user);
+  ev.database.str = const_cast<char *>(db);
+  ev.database.length = (unsigned long)strlen(db);
+  ev.table.str = const_cast<char *>(table);
+  ev.table.length = (unsigned long)strlen(table);
+  ev.column.str = const_cast<char *>(column);
+  ev.column.length = (unsigned long)strlen(column);
+  ev.event_subclass = MYSQL_AUTHORIZATION_COLUMN_ACCESS;
   ev.privileges = priv_mask;
   ev.requirement_mode = mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF;
 }
@@ -310,6 +329,40 @@ TEST_F(CedarPluginInitializedTest, DenyFlow) {
 
   auto result = cedar_check(&ev);
   EXPECT_EQ(result, MYSQL_AUTHORIZATION_DENY);
+}
+
+TEST_F(CedarPluginInitializedTest, ColumnAccessBypassedByDefault) {
+  mysql_authorization_event ev{};
+  fill_basic_column_event(ev, "alice", "test", "users", "id", 1UL << 0);
+
+  cedar_auth_cache_reset();
+  cedar_reset_stats_for_test();
+  cedar_set_collect_stats(true);
+  cedar_set_enable_column_access_for_test(false);
+  cedar_set_authorization_url("http://mock-deny");
+
+  auto result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_GRANT);
+  EXPECT_EQ(cedar_get_auth_stat_requests(), 1);
+  EXPECT_EQ(cedar_get_auth_stat_grants(), 1);
+  EXPECT_EQ(cedar_get_auth_stat_denies(), 0);
+}
+
+TEST_F(CedarPluginInitializedTest, ColumnAccessEnabledHonorsCedarDecision) {
+  mysql_authorization_event ev{};
+  fill_basic_column_event(ev, "alice", "test", "users", "id", 1UL << 0);
+
+  cedar_auth_cache_reset();
+  cedar_reset_stats_for_test();
+  cedar_set_collect_stats(true);
+  cedar_set_enable_column_access_for_test(true);
+  cedar_set_authorization_url("http://mock-deny");
+
+  auto result = cedar_check(&ev);
+  EXPECT_EQ(result, MYSQL_AUTHORIZATION_DENY);
+  EXPECT_EQ(cedar_get_auth_stat_requests(), 1);
+  EXPECT_EQ(cedar_get_auth_stat_grants(), 0);
+  EXPECT_EQ(cedar_get_auth_stat_denies(), 1);
 }
 
 TEST_F(CedarPluginInitializedTest, AnyOfRequirement) {

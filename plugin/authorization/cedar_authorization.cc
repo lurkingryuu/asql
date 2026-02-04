@@ -167,6 +167,9 @@ struct AuthStats {
   int64_t event_routine_access{0};
   int64_t event_other{0};
 
+  // Bypass counters
+  int64_t column_access_bypass_grants{0};
+
   // "How much work" per callback
   int64_t privilege_checks{0};
   int64_t privilege_bits_set_total{0};
@@ -232,6 +235,11 @@ static bool cedar_authorization_reset_stats = false;
 // Logging system variables
 // Gate info-level logs; warnings/errors remain enabled.
 static bool cedar_authorization_log_info = false;
+
+// Column access authorization: disabled by default for performance.
+// Column callbacks dominate OLTP workloads (80%+ in TPC-C). Enable only if
+// column-level Cedar policies are required.
+static bool cedar_authorization_enable_column_access = false;
 
 // Cache implementation
 #include <list>
@@ -1115,6 +1123,16 @@ mysql_authorization_result_t cedar_check(
     return MYSQL_AUTHORIZATION_IGNORE;
   }
 
+  // Column access: skip unless explicitly enabled via sysvar
+  if (!cedar_authorization_enable_column_access &&
+      event->event_subclass == MYSQL_AUTHORIZATION_COLUMN_ACCESS) {
+    if (cedar_authorization_collect_stats) {
+      get_thread_stats().column_access_bypass_grants++;
+      get_thread_stats().grants++;
+    }
+    return MYSQL_AUTHORIZATION_GRANT;
+  }
+
   int result;
   if (cedar_authorization_collect_stats) {
     get_thread_stats().supported_callbacks++;
@@ -1229,6 +1247,30 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
      stats->cache_evictions = 0;
      stats->total_time_us = 0;
      stats->remote_time_us = 0;
+
+     stats->req_presence = 0;
+     stats->req_any_of = 0;
+     stats->req_all_of = 0;
+     stats->req_other_mode = 0;
+     stats->presence_checks = 0;
+     stats->zero_priv_checks = 0;
+     stats->unsupported_event_ignores = 0;
+     stats->supported_callbacks = 0;
+     stats->url_unset_ignores = 0;
+
+     stats->event_db_access = 0;
+     stats->event_table_access = 0;
+     stats->event_column_access = 0;
+     stats->event_routine_access = 0;
+     stats->event_other = 0;
+
+     stats->column_access_bypass_grants = 0;
+
+     stats->privilege_checks = 0;
+     stats->privilege_bits_set_total = 0;
+     stats->privilege_events_total = 0;
+     stats->implied_privileges_total = 0;
+     stats->implied_privilege_events = 0;
    }
   // Don't set g_stats_registry_initialized = false;
   // Don't clear g_stats_registry;
@@ -1381,6 +1423,8 @@ static void cedar_authorization_reset_stats_update(
       stats->event_routine_access = 0;
       stats->event_other = 0;
 
+      stats->column_access_bypass_grants = 0;
+
       stats->privilege_checks = 0;
       stats->privilege_bits_set_total = 0;
       stats->privilege_events_total = 0;
@@ -1414,6 +1458,12 @@ static MYSQL_SYSVAR_BOOL(
     "Enable info-level logging for cedar_authorization (default: disabled)",
     nullptr, nullptr, false);
 
+static MYSQL_SYSVAR_BOOL(
+    enable_column_access, cedar_authorization_enable_column_access,
+    PLUGIN_VAR_RQCMDARG,
+    "Enable Cedar authorization for column-level access (default: disabled)",
+    nullptr, nullptr, false);
+
 // System variables array
 static SYS_VAR *cedar_authorization_system_vars[] = {
     MYSQL_SYSVAR(url),
@@ -1431,6 +1481,7 @@ static SYS_VAR *cedar_authorization_system_vars[] = {
     MYSQL_SYSVAR(collect_stats),
     MYSQL_SYSVAR(reset_stats),
     MYSQL_SYSVAR(log_info),
+    MYSQL_SYSVAR(enable_column_access),
     nullptr};
 
 // Status variables - Macro to define show functions for each stat
@@ -1468,6 +1519,8 @@ DEF_SHOW_STAT(event_table_access, event_table_access)
 DEF_SHOW_STAT(event_column_access, event_column_access)
 DEF_SHOW_STAT(event_routine_access, event_routine_access)
 DEF_SHOW_STAT(event_other, event_other)
+
+DEF_SHOW_STAT(column_access_bypass_grants, column_access_bypass_grants)
 
 DEF_SHOW_STAT(privilege_checks, privilege_checks)
 DEF_SHOW_STAT(privilege_bits_set_total, privilege_bits_set_total)
@@ -1524,6 +1577,10 @@ static SHOW_VAR cedar_status_vars[] = {
     {"cedar_authorization_event_routine_access",
      (char *)&show_auth_event_routine_access, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {"cedar_authorization_event_other", (char *)&show_auth_event_other, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+
+    {"cedar_authorization_column_access_bypass_grants",
+     (char *)&show_auth_column_access_bypass_grants, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
 
     {"cedar_authorization_privilege_checks", (char *)&show_auth_privilege_checks,
@@ -1652,6 +1709,8 @@ void cedar_reset_stats_for_test() {
     stats->event_routine_access = 0;
     stats->event_other = 0;
 
+    stats->column_access_bypass_grants = 0;
+
     stats->privilege_checks = 0;
     stats->privilege_bits_set_total = 0;
     stats->privilege_events_total = 0;
@@ -1662,6 +1721,10 @@ void cedar_reset_stats_for_test() {
 }
 void cedar_set_collect_stats(bool enable) {
   cedar_authorization_collect_stats = enable;
+}
+
+void cedar_set_enable_column_access_for_test(bool enable) {
+  cedar_authorization_enable_column_access = enable;
 }
 
 size_t cedar_test_curl_pool_size() { return CurlHandlePool::pool_size_for_test(); }
