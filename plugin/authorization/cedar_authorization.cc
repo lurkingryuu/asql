@@ -149,6 +149,30 @@ struct AuthStats {
   int64_t cache_evictions{0};
   int64_t total_time_us{0};
   int64_t remote_time_us{0};
+
+  // Breakdown counters (to attribute overhead)
+  int64_t req_presence{0};
+  int64_t req_any_of{0};
+  int64_t req_all_of{0};
+  int64_t req_other_mode{0};
+  int64_t presence_checks{0};
+  int64_t zero_priv_checks{0};
+  int64_t unsupported_event_ignores{0};
+  int64_t supported_callbacks{0};
+  int64_t url_unset_ignores{0};
+
+  int64_t event_db_access{0};
+  int64_t event_table_access{0};
+  int64_t event_column_access{0};
+  int64_t event_routine_access{0};
+  int64_t event_other{0};
+
+  // "How much work" per callback
+  int64_t privilege_checks{0};
+  int64_t privilege_bits_set_total{0};
+  int64_t privilege_events_total{0};
+  int64_t implied_privileges_total{0};
+  int64_t implied_privilege_events{0};
 };
 
 // Thread-local stats for reduced contention
@@ -473,6 +497,10 @@ static int check_single_privilege_cedar(
     const std::string &user_uid_value, const std::string &resource_identifier,
     const std::string &privilege, const std::string &day, uint32_t date,
     uint32_t fmt_time, const std::string &fmt_ip, const std::string &ns) {
+  if (cedar_authorization_collect_stats) {
+    get_thread_stats().privilege_checks++;
+  }
+
   // Check cache if enabled
   if (cedar_authorization_cache_enabled) {
     AuthCacheKey key{user_uid_value, resource_identifier, privilege, day, date,
@@ -503,6 +531,9 @@ static int check_single_privilege_cedar(
 
   // Check if URL is configured
   if (!cedar_authorization_url || strlen(cedar_authorization_url) == 0) {
+    if (cedar_authorization_collect_stats) {
+      get_thread_stats().url_unset_ignores++;
+    }
     if (plugin_handle) {
       my_plugin_log_message(
           &plugin_handle, MY_WARNING_LEVEL,
@@ -797,7 +828,14 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
   std::string day = time_ctx.day;
   uint32_t date = time_ctx.date;
   uint32_t fmt_time = time_ctx.time;
-   std::string client_ip = auth_common::auth_get_client_ip_cached(event->thd);
+    std::string client_ip = auth_common::auth_get_client_ip_cached(event->thd);
+
+  if (cedar_authorization_collect_stats) {
+    unsigned long privs = (unsigned long)event->privileges;
+    int bits = __builtin_popcountl(privs);
+    get_thread_stats().privilege_bits_set_total += bits;
+    get_thread_stats().privilege_events_total++;
+  }
 
   if (cedar_should_log_info()) {
     my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -869,6 +907,12 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
         privs_to_check.push_back({privilege, offset});
       }
     }
+  }
+
+  if (cedar_authorization_collect_stats) {
+    get_thread_stats().implied_privileges_total +=
+        static_cast<int64_t>(privs_to_check.size());
+    get_thread_stats().implied_privilege_events++;
   }
 
   bool is_any_of = (event->requirement_mode ==
@@ -966,6 +1010,39 @@ mysql_authorization_result_t cedar_check(
     const mysql_authorization_event *event) {
   if (cedar_authorization_collect_stats) {
     get_thread_stats().requests++;
+
+    switch (event->requirement_mode) {
+      case mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE:
+        get_thread_stats().req_presence++;
+        break;
+      case mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF:
+        get_thread_stats().req_any_of++;
+        break;
+      case mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF:
+        get_thread_stats().req_all_of++;
+        break;
+      default:
+        get_thread_stats().req_other_mode++;
+        break;
+    }
+
+    switch (event->event_subclass) {
+      case MYSQL_AUTHORIZATION_DB_ACCESS:
+        get_thread_stats().event_db_access++;
+        break;
+      case MYSQL_AUTHORIZATION_TABLE_ACCESS:
+        get_thread_stats().event_table_access++;
+        break;
+      case MYSQL_AUTHORIZATION_COLUMN_ACCESS:
+        get_thread_stats().event_column_access++;
+        break;
+      case MYSQL_AUTHORIZATION_ROUTINE_ACCESS:
+        get_thread_stats().event_routine_access++;
+        break;
+      default:
+        get_thread_stats().event_other++;
+        break;
+    }
   }
 
   if (cedar_should_log_info()) {
@@ -995,6 +1072,9 @@ mysql_authorization_result_t cedar_check(
   // discovery probes)
   if (event->requirement_mode ==
       mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE) {
+    if (cedar_authorization_collect_stats) {
+      get_thread_stats().presence_checks++;
+    }
     if (cedar_should_log_info()) {
       my_plugin_log_message(
           &plugin_handle, MY_INFORMATION_LEVEL,
@@ -1006,6 +1086,9 @@ mysql_authorization_result_t cedar_check(
   // Handle zero-privilege checks by allowing them (these are also internal
   // checks)
   if (event->privileges == 0) {
+    if (cedar_authorization_collect_stats) {
+      get_thread_stats().zero_priv_checks++;
+    }
     if (cedar_should_log_info()) {
       my_plugin_log_message(
           &plugin_handle, MY_INFORMATION_LEVEL,
@@ -1019,6 +1102,9 @@ mysql_authorization_result_t cedar_check(
       event->event_subclass != MYSQL_AUTHORIZATION_TABLE_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_COLUMN_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS) {
+    if (cedar_authorization_collect_stats) {
+      get_thread_stats().unsupported_event_ignores++;
+    }
     if (cedar_should_log_info()) {
       my_plugin_log_message(
           &plugin_handle, MY_INFORMATION_LEVEL,
@@ -1031,6 +1117,7 @@ mysql_authorization_result_t cedar_check(
 
   int result;
   if (cedar_authorization_collect_stats) {
+    get_thread_stats().supported_callbacks++;
     auto start_total = std::chrono::high_resolution_clock::now();
     result = cedar_check_access_core(event);
     auto end_total = std::chrono::high_resolution_clock::now();
@@ -1277,6 +1364,28 @@ static void cedar_authorization_reset_stats_update(
       stats->cache_evictions = 0;
       stats->total_time_us = 0;
       stats->remote_time_us = 0;
+
+      stats->req_presence = 0;
+      stats->req_any_of = 0;
+      stats->req_all_of = 0;
+      stats->req_other_mode = 0;
+      stats->presence_checks = 0;
+      stats->zero_priv_checks = 0;
+      stats->unsupported_event_ignores = 0;
+      stats->supported_callbacks = 0;
+      stats->url_unset_ignores = 0;
+
+      stats->event_db_access = 0;
+      stats->event_table_access = 0;
+      stats->event_column_access = 0;
+      stats->event_routine_access = 0;
+      stats->event_other = 0;
+
+      stats->privilege_checks = 0;
+      stats->privilege_bits_set_total = 0;
+      stats->privilege_events_total = 0;
+      stats->implied_privileges_total = 0;
+      stats->implied_privilege_events = 0;
     }
     mysql_mutex_unlock(&LOCK_stats_registry);
 
@@ -1344,6 +1453,28 @@ DEF_SHOW_STAT(cache_evictions, cache_evictions)
 DEF_SHOW_STAT(total_time_us, total_time_us)
 DEF_SHOW_STAT(remote_time_us, remote_time_us)
 
+DEF_SHOW_STAT(req_presence, req_presence)
+DEF_SHOW_STAT(req_any_of, req_any_of)
+DEF_SHOW_STAT(req_all_of, req_all_of)
+DEF_SHOW_STAT(req_other_mode, req_other_mode)
+DEF_SHOW_STAT(presence_checks, presence_checks)
+DEF_SHOW_STAT(zero_priv_checks, zero_priv_checks)
+DEF_SHOW_STAT(unsupported_event_ignores, unsupported_event_ignores)
+DEF_SHOW_STAT(supported_callbacks, supported_callbacks)
+DEF_SHOW_STAT(url_unset_ignores, url_unset_ignores)
+
+DEF_SHOW_STAT(event_db_access, event_db_access)
+DEF_SHOW_STAT(event_table_access, event_table_access)
+DEF_SHOW_STAT(event_column_access, event_column_access)
+DEF_SHOW_STAT(event_routine_access, event_routine_access)
+DEF_SHOW_STAT(event_other, event_other)
+
+DEF_SHOW_STAT(privilege_checks, privilege_checks)
+DEF_SHOW_STAT(privilege_bits_set_total, privilege_bits_set_total)
+DEF_SHOW_STAT(privilege_events_total, privilege_events_total)
+DEF_SHOW_STAT(implied_privileges_total, implied_privileges_total)
+DEF_SHOW_STAT(implied_privilege_events, implied_privilege_events)
+
 static SHOW_VAR cedar_status_vars[] = {
     {"cedar_authorization_requests", (char *)&show_auth_requests, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
@@ -1363,6 +1494,49 @@ static SHOW_VAR cedar_status_vars[] = {
      SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {"cedar_authorization_remote_time_us", (char *)&show_auth_remote_time_us,
      SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+
+    {"cedar_authorization_req_presence", (char *)&show_auth_req_presence,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_req_any_of", (char *)&show_auth_req_any_of, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_req_all_of", (char *)&show_auth_req_all_of, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_req_other_mode", (char *)&show_auth_req_other_mode,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+
+    {"cedar_authorization_presence_checks", (char *)&show_auth_presence_checks,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_zero_priv_checks", (char *)&show_auth_zero_priv_checks,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_unsupported_event_ignores",
+     (char *)&show_auth_unsupported_event_ignores, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_supported_callbacks", (char *)&show_auth_supported_callbacks,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_url_unset_ignores", (char *)&show_auth_url_unset_ignores,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+
+    {"cedar_authorization_event_db_access", (char *)&show_auth_event_db_access,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_event_table_access", (char *)&show_auth_event_table_access,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_event_column_access",
+     (char *)&show_auth_event_column_access, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_event_routine_access",
+     (char *)&show_auth_event_routine_access, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_event_other", (char *)&show_auth_event_other, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+
+    {"cedar_authorization_privilege_checks", (char *)&show_auth_privilege_checks,
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_privilege_bits_set_total",
+     (char *)&show_auth_privilege_bits_set_total, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_privilege_events_total",
+     (char *)&show_auth_privilege_events_total, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_implied_privileges_total",
+     (char *)&show_auth_implied_privileges_total, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"cedar_authorization_implied_privilege_events",
+     (char *)&show_auth_implied_privilege_events, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+
     {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
 
 // Plugin declaration
@@ -1461,6 +1635,28 @@ void cedar_reset_stats_for_test() {
     stats->cache_evictions = 0;
     stats->total_time_us = 0;
     stats->remote_time_us = 0;
+
+    stats->req_presence = 0;
+    stats->req_any_of = 0;
+    stats->req_all_of = 0;
+    stats->req_other_mode = 0;
+    stats->presence_checks = 0;
+    stats->zero_priv_checks = 0;
+    stats->unsupported_event_ignores = 0;
+    stats->supported_callbacks = 0;
+    stats->url_unset_ignores = 0;
+
+    stats->event_db_access = 0;
+    stats->event_table_access = 0;
+    stats->event_column_access = 0;
+    stats->event_routine_access = 0;
+    stats->event_other = 0;
+
+    stats->privilege_checks = 0;
+    stats->privilege_bits_set_total = 0;
+    stats->privilege_events_total = 0;
+    stats->implied_privileges_total = 0;
+    stats->implied_privilege_events = 0;
   }
   mysql_mutex_unlock(&LOCK_stats_registry);
 }
