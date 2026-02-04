@@ -3477,7 +3477,23 @@ TEST_P(ShareConnectionTinyPoolOneServerTest,
   // close all connections that are currently in the pool to get a stable
   // baseline.
   for (auto &srv : shared_servers()) {
-    srv->close_all_connections();  // reset the router's connection-pool
+    // retry until we can connect to the server.
+    using clock_type = std::chrono::steady_clock;
+    auto end_time = clock_type::now() + 30s;
+    while (true) {
+      auto cli_res = srv->admin_cli();
+      if (!cli_res) {
+        if (cli_res.error().value() == 1040) {
+          if (clock_type::now() < end_time) {
+            std::this_thread::sleep_for(10ms);
+            continue;
+          }
+        }
+      }
+      ASSERT_NO_ERROR(cli_res);
+      srv->close_all_connections(*cli_res);  // reset the router's connection-pool
+      break;
+    }
   }
   ASSERT_NO_ERROR(shared_router()->wait_for_idle_server_connections(0, 1s));
 
@@ -3587,7 +3603,23 @@ TEST_P(ShareConnectionTinyPoolOneServerTest,
   // close all connections that are currently in the pool to get a stable
   // baseline.
   for (auto &srv : shared_servers()) {
-    srv->close_all_connections();  // reset the router's connection-pool
+    // retry until we can connect to the server.
+    using clock_type = std::chrono::steady_clock;
+    auto end_time = clock_type::now() + 30s;
+    while (true) {
+      auto cli_res = srv->admin_cli();
+      if (!cli_res) {
+        if (cli_res.error().value() == 1040) {
+          if (clock_type::now() < end_time) {
+            std::this_thread::sleep_for(10ms);
+            continue;
+          }
+        }
+      }
+      ASSERT_NO_ERROR(cli_res);
+      srv->close_all_connections(*cli_res);  // reset the router's connection-pool
+      break;
+    }
   }
   ASSERT_NO_ERROR(shared_router()->wait_for_idle_server_connections(0, 1s));
 
