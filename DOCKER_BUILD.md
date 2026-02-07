@@ -20,7 +20,7 @@ This guide explains how to build and push Docker images for multiple architectur
    - Read the MySQL version from `MYSQL_VERSION` file
    - Build for `linux/amd64` and `linux/arm64` by default
    - Tag as `v8.0.43.cedar` (or your version) and `latest`
-   - Push to `lurkingryuu/mysql` on Docker Hub
+   - Push to `anonymous-user/mysql` on Docker Hub
 
 ### Custom Configuration
 
@@ -56,8 +56,8 @@ docker buildx inspect --bootstrap
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --file Dockerfile \
-  --tag lurkingryuu/mysql:v8.0.43.cedar \
-  --tag lurkingryuu/mysql:latest \
+  --tag anonymous-user/mysql:v8.0.43.cedar \
+  --tag anonymous-user/mysql:latest \
   --push \
   .
 ```
@@ -71,7 +71,7 @@ A GitHub Actions workflow (`.github/workflows/docker-build-push.yml`) is include
 1. **Add Docker Hub secrets to GitHub**:
    - Go to your repository → Settings → Secrets and variables → Actions
    - Add secrets:
-     - `DOCKER_USERNAME`: Your Docker Hub username (e.g., `lurkingryuu`)
+     - `DOCKER_USERNAME`: Your Docker Hub username (e.g., `anonymous-user`)
      - `DOCKER_PASSWORD`: Your Docker Hub access token or password
 
 2. **Workflow triggers**:
@@ -130,10 +130,10 @@ After pushing, verify the multi-arch manifest:
 
 ```bash
 # Inspect the manifest
-docker buildx imagetools inspect lurkingryuu/mysql:v8.0.43.cedar
+docker buildx imagetools inspect anonymous-user/mysql:v8.0.43.cedar
 
 # Test pulling for a specific platform
-docker pull --platform linux/arm64 lurkingryuu/mysql:v8.0.43.cedar
+docker pull --platform linux/arm64 anonymous-user/mysql:v8.0.43.cedar
 ```
 
 ## Repetitive Builds

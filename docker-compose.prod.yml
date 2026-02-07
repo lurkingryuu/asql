@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: ${MYSQL_IMAGE:-lurkingryuu/mysql:latest}
+    image: ${MYSQL_IMAGE:-anonymous-user/mysql:latest}
     container_name: mysql-server-prod
     restart: unless-stopped
     

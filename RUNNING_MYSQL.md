@@ -1,18 +1,18 @@
 # Running MySQL Docker Image
 
-This guide explains how to run the MySQL Docker image (`lurkingryuu/mysql:latest`) directly using `docker run` and connect to it.
+This guide explains how to run the MySQL Docker image (`anonymous-user/mysql:latest`) directly using `docker run` and connect to it.
 
 ## Quick Start
 
 ### 1. Pull the Image
 
 ```bash
-docker pull lurkingryuu/mysql:latest
+docker pull anonymous-user/mysql:latest
 ```
 
 Or pull a specific version:
 ```bash
-docker pull lurkingryuu/mysql:v8.0.43.cedar
+docker pull anonymous-user/mysql:v8.0.43.cedar
 ```
 
 ### 2. Run MySQL Container
@@ -23,7 +23,7 @@ docker run -d \
   --name mysql-server \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
   -p 3306:3306 \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 **With persistent data storage:**
@@ -36,7 +36,7 @@ docker run -d \
   -e MYSQL_PASSWORD=mypassword \
   -p 3306:3306 \
   -v mysql_data:/var/lib/mysql \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 **With host directory for data:**
@@ -49,7 +49,7 @@ docker run -d \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
   -p 3306:3306 \
   -v $(pwd)/mysql-data:/var/lib/mysql \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 ### 3. Wait for MySQL to Start
@@ -103,7 +103,7 @@ docker run -d \
   -e MYSQL_USER=appuser \
   -e MYSQL_PASSWORD=userpass \
   -p 3306:3306 \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 **Without root password (insecure, dev only):**
@@ -111,7 +111,7 @@ docker run -d \
 docker run -d \
   --name mysql-server \
   -p 3306:3306 \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 Then connect without password:
@@ -133,7 +133,7 @@ docker run -d \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
   -p 3306:3306 \
   -v mysql_data:/var/lib/mysql \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 
 # Volume persists even after container removal
 docker rm mysql-server
@@ -142,7 +142,7 @@ docker run -d \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
   -p 3306:3306 \
   -v mysql_data:/var/lib/mysql \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 ### Using Host Directories
@@ -158,7 +158,7 @@ docker run -d \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
   -p 3306:3306 \
   -v $(pwd)/mysql-data:/var/lib/mysql \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 **Note:** On first run, MySQL will initialize the data directory. Subsequent runs will use existing data.
@@ -250,7 +250,7 @@ docker run -d \
   --name mysql-server \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
   -p 3307:3306 \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 Then connect using:
@@ -269,7 +269,7 @@ docker run -d \
   --name mysql-server \
   --network mysql_network \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 
 # Connect from another container on same network
 docker run -it --rm \
@@ -286,7 +286,7 @@ docker run -d \
   --name mysql-server \
   --network mysql_network \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 ## Resource Limits
@@ -300,7 +300,7 @@ docker run -d \
   -p 3306:3306 \
   --memory="4g" \
   --cpus="2.0" \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 ### Set Memory Reservation
@@ -312,7 +312,7 @@ docker run -d \
   -p 3306:3306 \
   --memory="4g" \
   --memory-reservation="2g" \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 ## Troubleshooting
@@ -370,7 +370,7 @@ docker stop mysql-server
 # Start with skip-grant-tables (temporary)
 docker run -it --rm \
   -v mysql_data:/var/lib/mysql \
-  lurkingryuu/mysql:latest \
+  anonymous-user/mysql:latest \
   mysqld_safe --skip-grant-tables &
 
 # Connect and reset password
@@ -402,7 +402,7 @@ docker run -d \
   -e MYSQL_ROOT_PASSWORD=yourpassword \
   -p 3306:3306 \
   -v mysql_data:/var/lib/mysql \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 ```
 
 ## Complete Example
@@ -415,7 +415,7 @@ mkdir -p ./mysql-data
 chmod 750 ./mysql-data
 
 # 2. Pull image
-docker pull lurkingryuu/mysql:latest
+docker pull anonymous-user/mysql:latest
 
 # 3. Run container
 docker run -d \
@@ -431,7 +431,7 @@ docker run -d \
   -v $(pwd)/mysql-data:/var/lib/mysql \
   --memory="4g" \
   --cpus="2.0" \
-  lurkingryuu/mysql:latest
+  anonymous-user/mysql:latest
 
 # 4. Wait for initialization (check logs)
 docker logs -f mysql-server

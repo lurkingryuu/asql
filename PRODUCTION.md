@@ -48,7 +48,7 @@ This guide explains how to deploy MySQL in production using Docker Compose.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MYSQL_IMAGE` | Docker image to use | `lurkingryuu/mysql:latest` |
+| `MYSQL_IMAGE` | Docker image to use | `anonymous-user/mysql:latest` |
 | `MYSQL_PORT` | Port to expose MySQL | `3306` |
 | `MYSQL_ROOT_PASSWORD` | Root password (required in production) | - |
 | `MYSQL_DATABASE` | Initial database to create | - |
@@ -214,7 +214,7 @@ docker compose -f docker-compose.prod.yml restart mysql
 
 ```bash
 # Pull latest image
-docker pull lurkingryuu/mysql:latest
+docker pull anonymous-user/mysql:latest
 
 # Recreate container
 docker compose -f docker-compose.prod.yml up -d --force-recreate mysql

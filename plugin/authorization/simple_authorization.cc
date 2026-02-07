@@ -56,7 +56,7 @@
 #include <unistd.h>
 
 #define PLUGIN_SIMPLE_AUTHORIZATION_NAME "simple_authorization"
-#define PLUGIN_SIMPLE_AUTHORIZATION_AUTHOR "Karthikeya"
+#define PLUGIN_SIMPLE_AUTHORIZATION_AUTHOR "Anonymous"
 #define PLUGIN_SIMPLE_AUTHORIZATION_DESCRIPTION "Simple Authorization Plugin"
 #define PLUGIN_SIMPLE_AUTHORIZATION_VERSION 0x0001
 

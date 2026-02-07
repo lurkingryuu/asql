@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: lurkingryuu/mysql:latest
+    image: anonymous-user/mysql:latest
     container_name: mysql-server
     restart: unless-stopped
     ports:

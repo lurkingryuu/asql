@@ -23,7 +23,7 @@ set -e
 #   MAX_CPUS=4 MEMORY_LIMIT=8g ./build-and-push.sh --amd64-only
 
 # Configuration
-DOCKER_USERNAME="${DOCKER_USERNAME:-lurkingryuu}"
+DOCKER_USERNAME="${DOCKER_USERNAME}"
 IMAGE_NAME="${IMAGE_NAME:-mysql}"
 DOCKERFILE="${DOCKERFILE:-Dockerfile}"
 
