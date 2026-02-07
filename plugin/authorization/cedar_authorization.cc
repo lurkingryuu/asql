@@ -121,6 +121,9 @@
 #include <string>
 #include <vector>
 
+#include <new>
+#include <pthread.h>
+
 #include "plugin/authorization/authorization_common.h"
 #include "plugin/authorization/cedar_authorization.h"
 
@@ -152,7 +155,11 @@ struct AuthStats {
 };
 
 // Thread-local stats for reduced contention
-static thread_local AuthStats t_auth_stats;
+static thread_local AuthStats *t_auth_stats_ptr = nullptr;
+
+// pthread TLS key so we can run a destructor on thread exit.
+static pthread_key_t g_auth_stats_key;
+static bool g_auth_stats_key_initialized = false;
 
 // Registry for aggregating all thread-local stats
 // Protected by mutex, only accessed on SHOW STATUS (not hot path)
@@ -160,21 +167,61 @@ static mysql_mutex_t LOCK_stats_registry;
 static std::vector<AuthStats*> g_stats_registry;
 static bool g_stats_registry_initialized = false;
 
+static void unregister_stats(AuthStats *stats) {
+  if (!stats || !g_stats_registry_initialized) return;
+  mysql_mutex_lock(&LOCK_stats_registry);
+  for (auto it = g_stats_registry.begin(); it != g_stats_registry.end(); ++it) {
+    if (*it == stats) {
+      g_stats_registry.erase(it);
+      break;
+    }
+  }
+  mysql_mutex_unlock(&LOCK_stats_registry);
+}
+
+static void auth_stats_tls_destructor(void *ptr) {
+  auto *stats = static_cast<AuthStats *>(ptr);
+  if (!stats) return;
+  // Best-effort unregister to avoid stale pointers during aggregation.
+  unregister_stats(stats);
+  delete stats;
+}
+
 // Register current thread's stats (called on first use)
 static AuthStats& get_thread_stats() {
-  static thread_local bool registered = false;
-  if (!registered && g_stats_registry_initialized) {
-    mysql_mutex_lock(&LOCK_stats_registry);
-    g_stats_registry.push_back(&t_auth_stats);
-    mysql_mutex_unlock(&LOCK_stats_registry);
-    registered = true;
+  if (t_auth_stats_ptr) return *t_auth_stats_ptr;
+
+  AuthStats *stats = nullptr;
+  if (g_auth_stats_key_initialized) {
+    stats = static_cast<AuthStats *>(pthread_getspecific(g_auth_stats_key));
   }
-  return t_auth_stats;
+
+  if (!stats) {
+    stats = new (std::nothrow) AuthStats();
+    if (!stats) {
+      static thread_local AuthStats fallback;
+      return fallback;
+    }
+
+    if (g_auth_stats_key_initialized) {
+      (void)pthread_setspecific(g_auth_stats_key, stats);
+    }
+
+    if (g_stats_registry_initialized) {
+      mysql_mutex_lock(&LOCK_stats_registry);
+      g_stats_registry.push_back(stats);
+      mysql_mutex_unlock(&LOCK_stats_registry);
+    }
+  }
+
+  t_auth_stats_ptr = stats;
+  return *stats;
 }
 
 // Aggregate all thread-local stats
 static int64_t aggregate_stat(int64_t AuthStats::*member) {
   int64_t total = 0;
+  if (!g_stats_registry_initialized) return 0;
   mysql_mutex_lock(&LOCK_stats_registry);
   for (AuthStats* stats : g_stats_registry) {
     total += stats->*member;
@@ -1114,6 +1161,17 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
    mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
    g_stats_registry_initialized = true;
 
+   if (!g_auth_stats_key_initialized) {
+     if (pthread_key_create(&g_auth_stats_key, auth_stats_tls_destructor) == 0) {
+       g_auth_stats_key_initialized = true;
+     } else {
+       if (plugin_handle) {
+         my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                               "Failed to create pthread TLS key for auth stats; stats may leak");
+       }
+     }
+   }
+
    plugin_initialized = true;
 
   if (cedar_should_log_info()) {
@@ -1161,9 +1219,9 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
   // Don't clear g_stats_registry;
   // Don't destroy the mutex;
 #else
+   // Mark aggregation disabled. Do NOT clear/destroy registry here: TLS
+   // destructors may run during thread shutdown and need to unregister safely.
    g_stats_registry_initialized = false;
-   g_stats_registry.clear();
-   mysql_mutex_destroy(&LOCK_stats_registry);
 #endif
 
    // Clear thread-local IP cache
@@ -1280,6 +1338,10 @@ static void cedar_authorization_reset_stats_update(
     void *var_ptr [[maybe_unused]], const void *save) {
   bool new_val = *static_cast<const bool *>(save);
   if (new_val) {
+    if (!g_stats_registry_initialized) {
+      cedar_authorization_reset_stats = false;
+      return;
+    }
     mysql_mutex_lock(&LOCK_stats_registry);
     for (AuthStats* stats : g_stats_registry) {
       stats->requests = 0;
