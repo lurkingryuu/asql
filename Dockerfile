@@ -33,18 +33,20 @@ RUN apt-get update && apt-get install -y \
 
 # ---- Build libcedar (Rust → C ABI) -----------------------------------------
 # libcedar.a is statically linked into embedded_cedar.so at MySQL build time.
-# We clone from GitHub and build it here so the MySQL cmake step can find
-# libcedar.a and libcedar.h.  No runtime dependency on Rust after this stage.
+# We clone from GitHub and build it here so the MySQL cmake step can consume
+# the same LIBCEDAR_REPO / LIBCEDAR_BRANCH / LIBCEDAR_DIR contract as local
+# builds. No dependency on repo-relative folder structure remains.
 ARG LIBCEDAR_REPO=https://github.com/lurkingryuu/libcedar.git
 ARG LIBCEDAR_BRANCH=main
+ARG LIBCEDAR_DIR=/libcedar
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --default-toolchain stable --profile minimal
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN git clone --depth 1 --branch "${LIBCEDAR_BRANCH}" "${LIBCEDAR_REPO}" /libcedar && \
-    cd /libcedar && cargo build --release
+RUN git clone --depth 1 --branch "${LIBCEDAR_BRANCH}" "${LIBCEDAR_REPO}" "${LIBCEDAR_DIR}" && \
+    cd "${LIBCEDAR_DIR}" && cargo build --release
 
 # ---- End libcedar build -----------------------------------------------------
 
@@ -102,7 +104,9 @@ RUN cmake /mysql-source \
     -DMYSQL_DATADIR=/var/lib/mysql \
     -DSYSCONFDIR=/etc/mysql \
     -DWITH_SSL=system \
-    -DLIBCEDAR_DIR=/libcedar \
+    -DLIBCEDAR_REPO="${LIBCEDAR_REPO}" \
+    -DLIBCEDAR_BRANCH="${LIBCEDAR_BRANCH}" \
+    -DLIBCEDAR_DIR="${LIBCEDAR_DIR}" \
     -G Ninja
 
 RUN if [ -n "${PARALLEL_JOBS}" ]; then \

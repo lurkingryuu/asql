@@ -7,39 +7,74 @@
 # Embedded Cedar Authorization Plugin
 #
 # Links against libcedar (Rust → C ABI) for in-process Cedar evaluation.
-# libcedar.a is built from the libcedar/ workspace in this repository.
-# Set LIBCEDAR_DIR at cmake time or rely on the default path below.
+# By default, libcedar is fetched from GitHub into the build tree and built
+# with cargo. Override LIBCEDAR_DIR to point at an existing checkout instead.
 #
 # Typical build (from asql/build/):
+#   cmake ..
+#   make embedded_cedar
+#
+# Using an existing libcedar checkout:
 #   cmake .. -DLIBCEDAR_DIR=/path/to/libcedar
 #   make embedded_cedar
 
 # ---- Locate libcedar -------------------------------------------------------
 
+include(ExternalProject)
+
+set(LIBCEDAR_REPO "https://github.com/lurkingryuu/libcedar.git"
+    CACHE STRING "Git repository for libcedar")
+set(LIBCEDAR_BRANCH "main"
+    CACHE STRING "Git branch or tag for libcedar")
+
+set(_embedded_cedar_fetch_libcedar OFF)
 if(NOT DEFINED LIBCEDAR_DIR)
-  # Default: sibling directory relative to the MySQL source root
-  set(LIBCEDAR_DIR "${CMAKE_SOURCE_DIR}/../libcedar"
+  set(_embedded_cedar_fetch_libcedar ON)
+  set(LIBCEDAR_DIR "${CMAKE_BINARY_DIR}/external/libcedar"
       CACHE PATH "Root of the libcedar Rust workspace")
 endif()
+
+find_package(Git REQUIRED)
+find_program(CARGO_EXECUTABLE cargo REQUIRED)
 
 set(LIBCEDAR_HEADER "${LIBCEDAR_DIR}/include/libcedar.h")
 set(LIBCEDAR_STATIC "${LIBCEDAR_DIR}/target/release/libcedar.a")
 
-if(NOT EXISTS "${LIBCEDAR_HEADER}")
-  message(WARNING
-    "embedded_cedar: libcedar.h not found at ${LIBCEDAR_HEADER}. "
-    "Build libcedar first: cd ${LIBCEDAR_DIR} && cargo build --release. "
-    "Plugin will be skipped.")
-  return()
+if(_embedded_cedar_fetch_libcedar)
+  set(_libcedar_source_args
+      GIT_REPOSITORY "${LIBCEDAR_REPO}"
+      GIT_TAG "${LIBCEDAR_BRANCH}"
+      GIT_SHALLOW TRUE
+      SOURCE_DIR "${LIBCEDAR_DIR}")
+elseif(EXISTS "${LIBCEDAR_DIR}/Cargo.toml")
+  set(_libcedar_source_args
+      SOURCE_DIR "${LIBCEDAR_DIR}"
+      DOWNLOAD_COMMAND "")
+else()
+  message(FATAL_ERROR
+    "embedded_cedar: LIBCEDAR_DIR='${LIBCEDAR_DIR}' does not contain "
+    "a libcedar checkout (missing Cargo.toml). Either point LIBCEDAR_DIR "
+    "at an existing checkout or omit it to fetch from ${LIBCEDAR_REPO}.")
 endif()
 
-if(NOT EXISTS "${LIBCEDAR_STATIC}")
-  message(WARNING
-    "embedded_cedar: libcedar.a not found at ${LIBCEDAR_STATIC}. "
-    "Build libcedar first: cd ${LIBCEDAR_DIR} && cargo build --release. "
-    "Plugin will be skipped.")
-  return()
-endif()
+ExternalProject_Add(libcedar_project
+  PREFIX "${CMAKE_BINARY_DIR}/external/libcedar-prefix"
+  ${_libcedar_source_args}
+  UPDATE_DISCONNECTED TRUE
+  CONFIGURE_COMMAND ""
+  BUILD_IN_SOURCE TRUE
+  BUILD_COMMAND "${CARGO_EXECUTABLE}" build --release
+  INSTALL_COMMAND ""
+  BUILD_BYPRODUCTS
+    "${LIBCEDAR_HEADER}"
+    "${LIBCEDAR_STATIC}"
+)
+
+add_library(libcedar_static STATIC IMPORTED GLOBAL)
+set_target_properties(libcedar_static PROPERTIES
+  IMPORTED_LOCATION "${LIBCEDAR_STATIC}"
+  INTERFACE_INCLUDE_DIRECTORIES "${LIBCEDAR_DIR}/include")
+add_dependencies(libcedar_static libcedar_project)
 
 # ---- jsoncpp ---------------------------------------------------------------
 
@@ -60,6 +95,7 @@ target_include_directories(embedded_cedar
     "${LIBCEDAR_DIR}/include"
     "${CMAKE_SOURCE_DIR}/plugin/authorization"   # authorization_common.h
 )
+add_dependencies(embedded_cedar libcedar_project)
 
 if(JSONCPP_FOUND)
   target_include_directories(embedded_cedar PRIVATE ${JSONCPP_INCLUDE_DIRS})
@@ -74,7 +110,7 @@ endif()
 
 if(UNIX AND NOT APPLE)
   target_link_libraries(embedded_cedar
-    -Wl,--whole-archive "${LIBCEDAR_STATIC}" -Wl,--no-whole-archive
+    -Wl,--whole-archive libcedar_static -Wl,--no-whole-archive
     pthread dl m)
 else()
   # macOS: -force_load is the --whole-archive equivalent
@@ -89,4 +125,6 @@ else()
   target_link_libraries(embedded_cedar jsoncpp)
 endif()
 
-message(STATUS "embedded_cedar: using libcedar from ${LIBCEDAR_DIR}")
+message(STATUS
+  "embedded_cedar: using libcedar from ${LIBCEDAR_DIR} "
+  "(repo: ${LIBCEDAR_REPO}, ref: ${LIBCEDAR_BRANCH})")
