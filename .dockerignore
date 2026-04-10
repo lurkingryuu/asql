@@ -100,6 +100,7 @@ DOCKER-QUICKSTART.md
 
 # Scripts that aren't needed in the image
 *.sh
+!test_integrated_plugins.sh
 !docker/**/*.sh
 !scripts/**/*.sh
 !docker-entrypoint.sh

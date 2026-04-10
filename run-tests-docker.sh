@@ -11,7 +11,6 @@ cd "$CDIR"
 BUILDER_NAME="${BUILDER_NAME:-asql-unittest-builder}"
 BUILDER_NETWORK_MODE="${BUILDER_NETWORK_MODE:-host}"
 BUILD_NETWORK_MODE="${BUILD_NETWORK_MODE:-host}"
-PARALLEL_JOBS="${PARALLEL_JOBS:-4}"
 
 if ! docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
     echo "Creating buildx builder: ${BUILDER_NAME}"
@@ -29,7 +28,6 @@ echo "Building ASQL Unittest Docker image..."
 docker buildx build \
     --network "${BUILD_NETWORK_MODE}" \
     --load \
-    --build-arg "PARALLEL_JOBS=${PARALLEL_JOBS}" \
     -t asql-unittest \
     -f Dockerfile.unittest \
     .
