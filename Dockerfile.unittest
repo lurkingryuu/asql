@@ -2,8 +2,9 @@ FROM ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Build argument for parallel jobs (defaults to all available CPUs)
-ARG PARALLEL_JOBS
+# Build argument for parallel jobs. Keep the default conservative because
+# full-host parallelism can exhaust builder disk/tmp space on MySQL builds.
+ARG PARALLEL_JOBS=4
 ARG LIBCEDAR_REPO=https://github.com/lurkingryuu/libcedar.git
 ARG LIBCEDAR_BRANCH=main
 ARG LIBCEDAR_DIR=/libcedar
@@ -95,6 +96,9 @@ RUN cmake /mysql-source \
     -DWITH_BOOST=/tmp/boost \
     -DWITH_UNIT_TESTS=ON \
     -DWITH_DEBUG=OFF \
+    -DWITH_LTO=OFF \
+    -DWITH_ROUTER=OFF \
+    -DWITH_NDBCLUSTER_STORAGE_ENGINE=0 \
     -DENABLED_LOCAL_INFILE=1 \
     -DMYSQL_DATADIR=/var/lib/mysql \
     -DSYSCONFDIR=/etc/mysql \
@@ -105,13 +109,9 @@ RUN cmake /mysql-source \
     -G Ninja
 
 # Build the server, plugins, and focused test binaries needed by the unified
-# authorization test runner. Avoid the default `all` target to keep image size
-# and build time manageable.
-RUN if [ -n "${PARALLEL_JOBS}" ]; then \
-        ninja -j${PARALLEL_JOBS} mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t; \
-    else \
-        ninja -j$(nproc) mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t; \
-    fi
+# authorization test runner. Avoid the default `all` target and cap parallelism
+# so the unittest image stays within typical remote builder disk limits.
+RUN ninja -j${PARALLEL_JOBS} mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t
 
 RUN chmod +x \
     /mysql-source/unittest/docker/run-test-suite.sh \
