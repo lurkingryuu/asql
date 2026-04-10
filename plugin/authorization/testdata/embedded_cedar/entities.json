@@ -1,0 +1,17 @@
+[
+  {
+    "uid": { "type": "MySQL::User", "id": "alice" },
+    "attrs": {},
+    "parents": [{ "type": "MySQL::Group", "id": "readers" }]
+  },
+  {
+    "uid": { "type": "MySQL::User", "id": "developer" },
+    "attrs": {},
+    "parents": [{ "type": "MySQL::Group", "id": "readers" }]
+  },
+  {
+    "uid": { "type": "MySQL::Group", "id": "readers" },
+    "attrs": {},
+    "parents": []
+  }
+]

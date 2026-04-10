@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y \
     libudev-dev \
     libcurl4-openssl-dev \
     libjsoncpp-dev \
+    python3 \
     wget \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -40,6 +41,7 @@ WORKDIR /mysql-source
 
 # Copy necessary files for build
 COPY CMakeLists.txt MYSQL_VERSION *.cmake *.in *.h.cmake README INSTALL LICENSE ./
+COPY *.sh ./
 COPY sql/ sql/
 COPY include/ include/
 COPY storage/ storage/
@@ -86,15 +88,21 @@ RUN cmake /mysql-source \
     -DWITH_SSL=system \
     -G Ninja
 
-# Build only the components needed for unittests to save time and disk space
-# We specifically build the authorization tests and the main merged test binaries.
-# We do NOT build the default 'all' target which includes huge components like NDB, Router, etc.
+# Build the server, plugins, and focused test binaries needed by the unified
+# authorization test runner. Avoid the default `all` target to keep image size
+# and build time manageable.
 RUN if [ -n "${PARALLEL_JOBS}" ]; then \
-        ninja -j${PARALLEL_JOBS} authorization-t; \
+        ninja -j${PARALLEL_JOBS} mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t; \
     else \
-        ninja -j$(nproc) authorization-t; \
+        ninja -j$(nproc) mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t; \
     fi
 
-# Default command to run all tests
-ENTRYPOINT ["ctest"]
-CMD ["--output-on-failure"]
+RUN chmod +x \
+    /mysql-source/unittest/docker/run-test-suite.sh \
+    /mysql-source/test_integrated_plugins.sh \
+    /mysql-source/unittest/docker/mock_cedar_sync_service.py
+
+WORKDIR /mysql-build
+
+ENTRYPOINT ["/mysql-source/unittest/docker/run-test-suite.sh"]
+CMD ["full"]

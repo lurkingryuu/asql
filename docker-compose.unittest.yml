@@ -11,4 +11,4 @@ services:
     # This allows for faster iterations if we use a persistent build volume
     environment:
       - CTEST_OUTPUT_ON_FAILURE=1
-    command: ["--output-on-failure", "-R", "authorization-t"]
+    command: ["full"]

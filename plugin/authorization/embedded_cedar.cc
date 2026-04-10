@@ -63,6 +63,8 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <list>
 #include <mutex>
@@ -74,6 +76,7 @@ extern "C" {
 }
 
 #include "plugin/authorization/authorization_common.h"
+#include "plugin/authorization/embedded_cedar.h"
 
 #include "sql/auth/auth_acls.h"
 #include "sql/sql_class.h"
@@ -281,6 +284,16 @@ class ShardedAuthCache {
       shards_[i].lru_list.clear();
       mysql_mutex_unlock(&shards_[i].mutex);
     }
+  }
+
+  size_t size() {
+    size_t total = 0;
+    for (size_t i = 0; i < kNumShards; ++i) {
+      mysql_mutex_lock(&shards_[i].mutex);
+      total += shards_[i].entries.size();
+      mysql_mutex_unlock(&shards_[i].mutex);
+    }
+    return total;
   }
 
  private:
@@ -520,7 +533,7 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
   return authorized ? 1 : 0;
 }
 
-static mysql_authorization_result_t embedded_cedar_check(
+mysql_authorization_result_t embedded_cedar_check(
     const mysql_authorization_event *event) {
   if (embedded_cedar_collect_stats) get_thread_stats().requests++;
 
@@ -774,3 +787,142 @@ mysql_declare_plugin(embedded_cedar){
     nullptr,
     0,
 } mysql_declare_plugin_end;
+
+#ifdef EXTRA_CODE_FOR_UNIT_TESTING
+static void set_test_string(char *&dest, const char *src) {
+  if (dest) free(dest);
+  dest = src ? strdup(src) : nullptr;
+}
+
+void embedded_cedar_set_policy_file_for_test(const char *path) {
+  set_test_string(embedded_cedar_policy_file, path);
+}
+
+void embedded_cedar_set_schema_file_for_test(const char *path) {
+  set_test_string(embedded_cedar_schema_file, path);
+}
+
+void embedded_cedar_set_entities_file_for_test(const char *path) {
+  set_test_string(embedded_cedar_entities_file, path);
+}
+
+void embedded_cedar_set_namespace_for_test(const char *ns) {
+  set_test_string(embedded_cedar_namespace, ns);
+}
+
+void embedded_cedar_set_enabled_for_test(bool enabled) {
+  embedded_cedar_enabled = enabled;
+}
+
+void embedded_cedar_set_collect_stats_for_test(bool enabled) {
+  embedded_cedar_collect_stats = enabled;
+}
+
+void embedded_cedar_set_enable_column_access_for_test(bool enabled) {
+  embedded_cedar_enable_column_access = enabled;
+}
+
+void embedded_cedar_set_cache_enabled_for_test(bool enabled) {
+  embedded_cedar_cache_enabled = enabled;
+}
+
+void embedded_cedar_set_cache_size_for_test(int size) {
+  embedded_cedar_cache_size = size;
+}
+
+void embedded_cedar_set_cache_ttl_for_test(int ttl_seconds) {
+  embedded_cedar_cache_ttl = ttl_seconds;
+}
+
+bool embedded_cedar_reload_for_test() {
+  mysql_rwlock_wrlock(&LOCK_cedar_engine);
+  bool ok = create_engine_from_files();
+  mysql_rwlock_unlock(&LOCK_cedar_engine);
+  g_cache.clear();
+  embedded_cedar_reload = false;
+  return ok;
+}
+
+void embedded_cedar_cache_flush_for_test() {
+  g_cache.clear();
+  embedded_cedar_cache_flush = false;
+}
+
+void embedded_cedar_reset_stats_for_test() {
+  if (!g_stats_registry_initialized) {
+    embedded_cedar_reset_stats = false;
+    return;
+  }
+  mysql_mutex_lock(&LOCK_stats_registry);
+  for (EmbeddedAuthStats *s : g_stats_registry) {
+    s->requests = s->grants = s->denies = s->errors = 0;
+    s->cache_hits = s->cache_misses = s->cache_evictions = 0;
+    s->total_time_us = s->eval_time_us = 0;
+  }
+  mysql_mutex_unlock(&LOCK_stats_registry);
+  embedded_cedar_reset_stats = false;
+}
+
+size_t embedded_cedar_cache_size_for_test() {
+  return g_cache.size();
+}
+
+size_t embedded_cedar_cache_key_shard_index_for_test(const char *user,
+                                                     const char *resource,
+                                                     const char *action,
+                                                     const char *day,
+                                                     uint32_t date,
+                                                     const char *ip) {
+  AuthCacheKey key{std::string(user ? user : ""),
+                   std::string(resource ? resource : ""),
+                   std::string(action ? action : ""),
+                   std::string(day ? day : ""),
+                   date,
+                   std::string(ip ? ip : "")};
+  return AuthCacheKeyHash{}(key) >> kShardShift;
+}
+
+bool embedded_cedar_cache_contains_for_test(const char *user,
+                                            const char *resource,
+                                            const char *action,
+                                            const char *day,
+                                            uint32_t date,
+                                            const char *ip) {
+  AuthCacheKey key{std::string(user ? user : ""),
+                   std::string(resource ? resource : ""),
+                   std::string(action ? action : ""),
+                   std::string(day ? day : ""),
+                   date,
+                   std::string(ip ? ip : "")};
+  AuthCacheEntry entry;
+  return g_cache.get(key, entry);
+}
+
+int64_t embedded_cedar_get_auth_stat_requests() {
+  return aggregate_stat(&EmbeddedAuthStats::requests);
+}
+
+int64_t embedded_cedar_get_auth_stat_grants() {
+  return aggregate_stat(&EmbeddedAuthStats::grants);
+}
+
+int64_t embedded_cedar_get_auth_stat_denies() {
+  return aggregate_stat(&EmbeddedAuthStats::denies);
+}
+
+int64_t embedded_cedar_get_auth_stat_errors() {
+  return aggregate_stat(&EmbeddedAuthStats::errors);
+}
+
+int64_t embedded_cedar_get_auth_stat_cache_hits() {
+  return aggregate_stat(&EmbeddedAuthStats::cache_hits);
+}
+
+int64_t embedded_cedar_get_auth_stat_cache_misses() {
+  return aggregate_stat(&EmbeddedAuthStats::cache_misses);
+}
+
+int64_t embedded_cedar_get_auth_stat_cache_evictions() {
+  return aggregate_stat(&EmbeddedAuthStats::cache_evictions);
+}
+#endif

@@ -25,6 +25,10 @@ set -e
 
 # Globals
 STAGE_RESULTS=()
+AUTHORIZATION_MODE="http"
+EMBEDDED_POLICY_FILE=""
+EMBEDDED_SCHEMA_FILE=""
+EMBEDDED_ENTITIES_FILE=""
 
 # Cleanup trap
 cleanup_on_exit() {
@@ -266,26 +270,51 @@ stage1_load_plugins() {
     stage_passed=false
   fi
 
-  # Install Cedar Authorization Plugin
-  if ! install_plugin "cedar_authorization" "cedar_authorization.so"; then
-    print_error "Failed to install cedar_authorization plugin"
-    stage_passed=false
+  if [ "$AUTHORIZATION_MODE" = "embedded" ]; then
+    if [ -z "$EMBEDDED_POLICY_FILE" ] || [ -z "$EMBEDDED_SCHEMA_FILE" ] || [ -z "$EMBEDDED_ENTITIES_FILE" ]; then
+      print_error "Embedded mode requires policy, schema, and entities files"
+      stage_passed=false
+    fi
+
+    if ! install_plugin "embedded_cedar" "embedded_cedar.so"; then
+      print_error "Failed to install embedded_cedar plugin"
+      stage_passed=false
+    fi
+
+    if ! check_plugin_status "embedded_cedar"; then
+      stage_passed=false
+    fi
+
+    print_info "Configuring embedded_cedar plugin..."
+    mysql_exec "SET GLOBAL embedded_cedar_policy_file = '$EMBEDDED_POLICY_FILE';" || stage_passed=false
+    mysql_exec "SET GLOBAL embedded_cedar_schema_file = '$EMBEDDED_SCHEMA_FILE';" || stage_passed=false
+    mysql_exec "SET GLOBAL embedded_cedar_entities_file = '$EMBEDDED_ENTITIES_FILE';" || stage_passed=false
+    mysql_exec "SET GLOBAL embedded_cedar_namespace = 'MySQL';" || stage_passed=false
+    mysql_exec "SET GLOBAL embedded_cedar_enabled = ON;" || stage_passed=false
+    mysql_exec "SET GLOBAL embedded_cedar_collect_stats = ON;" || stage_passed=false
+    mysql_exec "SET GLOBAL embedded_cedar_reload = ON;" || stage_passed=false
+  else
+    # Install Cedar Authorization Plugin
+    if ! install_plugin "cedar_authorization" "cedar_authorization.so"; then
+      print_error "Failed to install cedar_authorization plugin"
+      stage_passed=false
+    fi
+
+    if ! check_plugin_status "cedar_authorization"; then
+      stage_passed=false
+    fi
+
+    # Configure Cedar Authorization Plugin
+    print_info "Configuring cedar_authorization plugin..."
+    # Remove trailing /v1 from CEDAR_BASE_URL to avoid double slash
+    local cedar_base="${CEDAR_BASE_URL%/v1}"
+    mysql_exec "SET GLOBAL cedar_authorization_url = '$cedar_base/v1/is_authorized';" || stage_passed=false
+    mysql_exec "SET GLOBAL cedar_authorization_timeout = 5000;" || stage_passed=false
+
+    # Verify configuration
+    local cedar_url=$(mysql_exec "SHOW VARIABLES LIKE 'cedar_authorization_url';" | tail -n1 | awk '{print $2}')
+    print_success "Cedar Authorization URL configured: $cedar_url"
   fi
-
-  if ! check_plugin_status "cedar_authorization"; then
-    stage_passed=false
-  fi
-
-  # Configure Cedar Authorization Plugin
-  print_info "Configuring cedar_authorization plugin..."
-  # Remove trailing /v1 from CEDAR_BASE_URL to avoid double slash
-  local cedar_base="${CEDAR_BASE_URL%/v1}"
-  mysql_exec "SET GLOBAL cedar_authorization_url = '$cedar_base/v1/is_authorized';" || stage_passed=false
-  mysql_exec "SET GLOBAL cedar_authorization_timeout = 5000;" || stage_passed=false
-
-  # Verify configuration
-  local cedar_url=$(mysql_exec "SHOW VARIABLES LIKE 'cedar_authorization_url';" | tail -n1 | awk '{print $2}')
-  print_success "Cedar Authorization URL configured: $cedar_url"
 
   if [ "$stage_passed" = true ]; then
     print_success "Stage 1 completed successfully"
@@ -410,6 +439,20 @@ stage2_create_resources() {
 # Stage 3: Define Cedar policies (using real Cedar Agent API)
 stage3_define_policies() {
   print_stage "STAGE 3: Define Cedar Policies in Cedar Agent"
+
+  if [ "$AUTHORIZATION_MODE" = "embedded" ]; then
+    if [ ! -f "$EMBEDDED_POLICY_FILE" ] || [ ! -f "$EMBEDDED_SCHEMA_FILE" ] || [ ! -f "$EMBEDDED_ENTITIES_FILE" ]; then
+      print_error "Embedded Cedar fixture files are missing"
+      STAGE_RESULTS+=("STAGE 3: FAIL")
+      return 1
+    fi
+    print_success "Embedded Cedar fixture files present"
+    print_info "Policy file: $EMBEDDED_POLICY_FILE"
+    print_info "Schema file: $EMBEDDED_SCHEMA_FILE"
+    print_info "Entities file: $EMBEDDED_ENTITIES_FILE"
+    STAGE_RESULTS+=("STAGE 3: PASS")
+    return 0
+  fi
 
   print_info "Verifying Cedar Agent policies..."
   print_info "NOTE: Cedar Agent is managed externally with pre-loaded policies"
@@ -627,6 +670,10 @@ stage5_cleanup() {
   print_info "Disabling plugins..."
   mysql_exec "SET GLOBAL ddl_audit_enabled = OFF;" 2>/dev/null || true
   mysql_exec "SET GLOBAL cedar_authorization_url = DEFAULT;" 2>/dev/null || true
+  mysql_exec "SET GLOBAL embedded_cedar_enabled = OFF;" 2>/dev/null || true
+  mysql_exec "SET GLOBAL embedded_cedar_policy_file = DEFAULT;" 2>/dev/null || true
+  mysql_exec "SET GLOBAL embedded_cedar_schema_file = DEFAULT;" 2>/dev/null || true
+  mysql_exec "SET GLOBAL embedded_cedar_entities_file = DEFAULT;" 2>/dev/null || true
   mysql_exec "SET GLOBAL ddl_audit_cedar_url = DEFAULT;" 2>/dev/null || true
 
   # Drop databases
@@ -648,6 +695,7 @@ stage5_cleanup() {
   # Uninstall plugins
   print_info "Uninstalling plugins..."
   uninstall_plugin "cedar_authorization"
+  uninstall_plugin "embedded_cedar"
   uninstall_plugin "ddl_audit"
 
   # Note: We don't clean up Cedar Agent policies/data here as they may be used by other tests
@@ -699,6 +747,10 @@ main() {
   DOCKER=false
   CEDAR_BASE_URL="http://localhost:8280/v1"
   CEDAR_AUTH_TOKEN=""
+  AUTHORIZATION_MODE="http"
+  EMBEDDED_POLICY_FILE=""
+  EMBEDDED_SCHEMA_FILE=""
+  EMBEDDED_ENTITIES_FILE=""
   CLEANUP_ONLY=false
   VERBOSE=false
   DEBUG=false
@@ -734,6 +786,22 @@ main() {
         CEDAR_AUTH_TOKEN="$2"
         shift 2
         ;;
+      --authorization-mode)
+        AUTHORIZATION_MODE="$2"
+        shift 2
+        ;;
+      --embedded-policy-file)
+        EMBEDDED_POLICY_FILE="$2"
+        shift 2
+        ;;
+      --embedded-schema-file)
+        EMBEDDED_SCHEMA_FILE="$2"
+        shift 2
+        ;;
+      --embedded-entities-file)
+        EMBEDDED_ENTITIES_FILE="$2"
+        shift 2
+        ;;
       --cleanup-only)
         CLEANUP_ONLY=true
         shift
@@ -750,7 +818,7 @@ main() {
       --help)
         echo "Usage: $0 [OPTIONS]"
         echo ""
-        echo "Integrated test script for DDL Audit + Cedar Authorization plugins with real Cedar Agent"
+        echo "Integrated test script for DDL Audit plus pluggable authorization mode"
         echo ""
         echo "Options:"
         echo "  --mysql-socket PATH          MySQL socket path"
@@ -760,6 +828,10 @@ main() {
         echo "  --docker                     Use Docker Compose MySQL"
         echo "  --cedar-url URL              Cedar Agent base URL (default: http://localhost:8280/v1)"
         echo "  --cedar-auth-token TOKEN     Cedar Agent authentication token (optional)"
+        echo "  --authorization-mode MODE    Authorization mode: http or embedded"
+        echo "  --embedded-policy-file PATH  Embedded Cedar policy file"
+        echo "  --embedded-schema-file PATH  Embedded Cedar schema file"
+        echo "  --embedded-entities-file PATH Embedded Cedar entities file"
         echo "  --cleanup-only               Only run cleanup"
         echo "  --verbose                    Enable verbose output"
         echo "  --debug                      Enable debug messages"
@@ -803,10 +875,11 @@ main() {
   fi
 
   print_info "========================================"
-  print_info "Integrated Plugin Test Suite with Real Cedar Agent"
+  print_info "Integrated Plugin Test Suite"
   print_info "========================================"
   print_info "MySQL User: $MYSQL_USER"
   print_info "Docker Mode: $DOCKER"
+  print_info "Authorization Mode: $AUTHORIZATION_MODE"
   print_info "Cedar Agent URL: $CEDAR_BASE_URL"
   if [ -n "$CEDAR_AUTH_TOKEN" ]; then
     print_info "Cedar Auth: Enabled"
@@ -816,10 +889,10 @@ main() {
   print_info "========================================"
   echo ""
 
-  # Check Cedar Agent connectivity
+  # Check Cedar Agent or sync service connectivity
   if [ "$CLEANUP_ONLY" = false ]; then
     if ! check_cedar_agent; then
-      print_error "Cannot proceed without Cedar Agent running"
+      print_error "Cannot proceed without Cedar service running"
       exit 1
     fi
   fi
