@@ -4,6 +4,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Build argument for parallel jobs (defaults to all available CPUs)
 ARG PARALLEL_JOBS
+ARG LIBCEDAR_REPO=https://github.com/lurkingryuu/libcedar.git
+ARG LIBCEDAR_BRANCH=main
+ARG LIBCEDAR_DIR=/libcedar
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -35,6 +38,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --default-toolchain stable --profile minimal
 
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Pre-build libcedar so the ninja step has the static lib ready and never
+# needs to perform its own network fetch. Requires --network=host on docker build.
+RUN git clone --depth 1 --branch "${LIBCEDAR_BRANCH}" "${LIBCEDAR_REPO}" "${LIBCEDAR_DIR}" \
+    && cd "${LIBCEDAR_DIR}" && cargo build --release
 
 RUN mkdir -p /tmp/boost /mysql-build
 
@@ -91,6 +99,9 @@ RUN cmake /mysql-source \
     -DMYSQL_DATADIR=/var/lib/mysql \
     -DSYSCONFDIR=/etc/mysql \
     -DWITH_SSL=system \
+    -DLIBCEDAR_REPO="${LIBCEDAR_REPO}" \
+    -DLIBCEDAR_BRANCH="${LIBCEDAR_BRANCH}" \
+    -DLIBCEDAR_DIR="${LIBCEDAR_DIR}" \
     -G Ninja
 
 # Build the server, plugins, and focused test binaries needed by the unified

@@ -9,7 +9,7 @@ CDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$CDIR"
 
 echo "Building ASQL Unittest Docker image..."
-docker build -t asql-unittest -f Dockerfile.unittest .
+docker build --network=host -t asql-unittest -f Dockerfile.unittest .
 
 echo "Running ASQL containerized authorization suite..."
 if [ $# -gt 0 ]; then
