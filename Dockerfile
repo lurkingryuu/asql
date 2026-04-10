@@ -142,13 +142,9 @@ RUN apt-get update && apt-get install -y \
     libkrb5-3 \
     libedit2 \
     curl \
-    libcurl4-openssl-dev \
-    libjsoncpp-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && ldconfig \
-    && echo "Verifying required libraries are available:" \
-    && ldconfig -p | grep -q libcurl.so.4 && echo "✓ libcurl.so.4 found" \
-    && ldconfig -p | grep -q libjsoncpp && echo "✓ libjsoncpp found"
+    libcurl4 \
+    libjsoncpp25 \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r mysql && useradd -r -g mysql mysql
 
