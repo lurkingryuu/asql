@@ -37,6 +37,13 @@ MAX_CPU_PERCENT="${MAX_CPU_PERCENT:-}"
 # Set MEMORY_LIMIT to limit memory usage (e.g., "8g", "4096m")
 MEMORY_LIMIT="${MEMORY_LIMIT:-}"
 
+# Networking
+# On some remote hosts, Docker bridge networking cannot reach GitHub reliably
+# from inside build containers. Default both the buildx builder and the build
+# itself to host networking, but allow overrides when needed.
+BUILDER_NETWORK_MODE="${BUILDER_NETWORK_MODE:-host}"
+BUILD_NETWORK_MODE="${BUILD_NETWORK_MODE:-host}"
+
 # Cross-platform function to get number of CPUs
 get_cpu_count() {
     if command -v nproc >/dev/null 2>&1; then
@@ -99,16 +106,40 @@ echo "Platforms: ${PLATFORMS}"
 echo "Resource Limits:"
 echo "  Parallel Jobs: ${PARALLEL_JOBS} (out of ${TOTAL_CPUS} available CPUs)"
 [ -n "${MEMORY_LIMIT}" ] && echo "  Memory Limit: ${MEMORY_LIMIT}"
+echo "Networking:"
+echo "  Builder Network: ${BUILDER_NETWORK_MODE}"
+echo "  Build Network: ${BUILD_NETWORK_MODE}"
 echo "=========================================="
 echo ""
 
 # Ensure buildx builder exists and is using the correct driver
 BUILDER_NAME="multiarch-builder"
-if ! docker buildx inspect ${BUILDER_NAME} &>/dev/null; then
+BUILDER_CONTAINER="buildx_buildkit_${BUILDER_NAME}0"
+RECREATE_BUILDER=0
+
+if docker buildx inspect ${BUILDER_NAME} &>/dev/null; then
+    echo "Using existing buildx builder: ${BUILDER_NAME}"
+    docker buildx use ${BUILDER_NAME}
+
+    if docker ps -a --format '{{.Names}}' | grep -q "^${BUILDER_CONTAINER}$"; then
+        CURRENT_NETWORK_MODE="$(docker inspect -f '{{.HostConfig.NetworkMode}}' ${BUILDER_CONTAINER} 2>/dev/null || true)"
+        if [ -n "${CURRENT_NETWORK_MODE}" ] && [ "${CURRENT_NETWORK_MODE}" != "${BUILDER_NETWORK_MODE}" ]; then
+            echo "Recreating builder ${BUILDER_NAME} to switch network mode from ${CURRENT_NETWORK_MODE} to ${BUILDER_NETWORK_MODE}"
+            docker buildx rm -f ${BUILDER_NAME}
+            RECREATE_BUILDER=1
+        fi
+    else
+        RECREATE_BUILDER=1
+    fi
+else
+    RECREATE_BUILDER=1
+fi
+
+if [ "${RECREATE_BUILDER}" -eq 1 ]; then
     echo "Creating buildx builder: ${BUILDER_NAME}"
     
     # Build driver options with resource limits
-    DRIVER_OPTS="--driver docker-container"
+    DRIVER_OPTS="--driver docker-container --driver-opt network=${BUILDER_NETWORK_MODE}"
     if [ -n "${MAX_CPU_PERCENT}" ] || [ -n "${MAX_CPUS}" ]; then
         # Calculate CPU limit for the builder container
         if [ -n "${MAX_CPUS}" ]; then
@@ -122,7 +153,6 @@ if ! docker buildx inspect ${BUILDER_NAME} &>/dev/null; then
     docker buildx create --name ${BUILDER_NAME} ${DRIVER_OPTS} --use
     
     # Set resource limits on the builder container if specified
-    BUILDER_CONTAINER="buildx_buildkit_${BUILDER_NAME}0"
     if docker ps -a --format '{{.Names}}' | grep -q "^${BUILDER_CONTAINER}$"; then
         if [ -n "${MAX_CPUS}" ] || [ -n "${MAX_CPU_PERCENT}" ]; then
             echo "Setting CPU limit on builder container..."
@@ -136,11 +166,7 @@ if ! docker buildx inspect ${BUILDER_NAME} &>/dev/null; then
     
     docker buildx inspect --bootstrap
 else
-    echo "Using existing buildx builder: ${BUILDER_NAME}"
-    docker buildx use ${BUILDER_NAME}
-    
     # Update resource limits on existing builder if specified
-    BUILDER_CONTAINER="buildx_buildkit_${BUILDER_NAME}0"
     if docker ps -a --format '{{.Names}}' | grep -q "^${BUILDER_CONTAINER}$"; then
         if [ -n "${MAX_CPUS}" ] || [ -n "${MAX_CPU_PERCENT}" ]; then
             CPU_LIMIT="${PARALLEL_JOBS}"
@@ -169,6 +195,7 @@ if [ -n "${PARALLEL_JOBS}" ]; then
 fi
 
 docker buildx build \
+    --network ${BUILD_NETWORK_MODE} \
     --platform ${PLATFORMS} \
     --file ${DOCKERFILE} \
     ${BUILD_ARGS} \
