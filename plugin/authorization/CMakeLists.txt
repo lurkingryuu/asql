@@ -65,6 +65,12 @@ find_program(CARGO_EXECUTABLE cargo REQUIRED)
 set(LIBCEDAR_HEADER "${LIBCEDAR_DIR}/include/libcedar.h")
 set(LIBCEDAR_STATIC "${LIBCEDAR_DIR}/target/release/libcedar.a")
 
+# CMake validates imported include directories at configure time. When libcedar
+# is fetched via ExternalProject, those directories do not exist yet on a fresh
+# build, so create placeholders up front.
+file(MAKE_DIRECTORY "${LIBCEDAR_DIR}/include")
+file(MAKE_DIRECTORY "${LIBCEDAR_DIR}/target/release")
+
 if(_embedded_cedar_fetch_libcedar)
   set(_libcedar_source_args
       GIT_REPOSITORY "${LIBCEDAR_REPO}"
