@@ -33,9 +33,8 @@ RUN apt-get update && apt-get install -y \
 
 # ---- Build libcedar (Rust → C ABI) -----------------------------------------
 # libcedar.a is statically linked into embedded_cedar.so at MySQL build time.
-# We clone from GitHub and build it here so the MySQL cmake step can consume
-# the same LIBCEDAR_REPO / LIBCEDAR_BRANCH / LIBCEDAR_DIR contract as local
-# builds. No dependency on repo-relative folder structure remains.
+# The source is cloned from GitHub during the image build so remote builders
+# use the same upstream checkout flow.
 ARG LIBCEDAR_REPO=https://github.com/lurkingryuu/libcedar.git
 ARG LIBCEDAR_BRANCH=main
 ARG LIBCEDAR_DIR=/libcedar
@@ -45,7 +44,21 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN git clone --depth 1 --branch "${LIBCEDAR_BRANCH}" "${LIBCEDAR_REPO}" "${LIBCEDAR_DIR}" && \
+RUN set -eux; \
+    attempt=1; \
+    until [ "$attempt" -gt 5 ]; do \
+      rm -rf "${LIBCEDAR_DIR}"; \
+      if git -c http.version=HTTP/1.1 clone --depth 1 --branch "${LIBCEDAR_BRANCH}" "${LIBCEDAR_REPO}" "${LIBCEDAR_DIR}"; then \
+        break; \
+      fi; \
+      if [ "$attempt" -eq 5 ]; then \
+        echo "libcedar clone failed after ${attempt} attempts" >&2; \
+        exit 1; \
+      fi; \
+      echo "libcedar clone attempt ${attempt} failed; retrying..." >&2; \
+      attempt=$((attempt + 1)); \
+      sleep 5; \
+    done; \
     cd "${LIBCEDAR_DIR}" && cargo build --release
 
 # ---- End libcedar build -----------------------------------------------------

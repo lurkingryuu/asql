@@ -10,15 +10,15 @@
    GNU General Public License, version 2.0, for more details. */
 
 /**
-  @file plugin/embedded_cedar/embedded_cedar.cc
+  @file plugin/authorization/embedded_cedar.cc
 
   Embedded Cedar Authorization Plugin
 
-  Evaluates Cedar policies in-process via libcedar — a C ABI wrapper around
-  the Cedar Rust crate.  No HTTP round-trip is required at query time.
+  Evaluates Cedar policies in-process via libcedar - a C ABI wrapper around
+  the Cedar Rust crate. No HTTP round-trip is required at query time.
 
   Policies, schema, and entities are loaded from files on disk at plugin
-  initialization and on demand via the `embedded_cedar_reload` sysvar.  This
+  initialization and on demand via the `embedded_cedar_reload` sysvar. This
   makes the plugin fully agent-independent after startup.
 
   Configuration:
@@ -41,7 +41,7 @@
   Thread safety:
     A single global CedarEngine* is shared across all MySQL threads.
     Concurrent is_authorized calls hold a shared read lock; engine reload
-    acquires an exclusive write lock.  Cedar evaluation is fast enough that
+    acquires an exclusive write lock. Cedar evaluation is fast enough that
     mutex contention is not a bottleneck on typical OLTP workloads.
 */
 
@@ -69,7 +69,6 @@
 #include <unordered_map>
 using namespace std;
 
-/* libcedar C ABI */
 extern "C" {
 #include "libcedar.h"
 }
@@ -82,10 +81,6 @@ extern "C" {
 #include "sql/protocol_classic.h"
 #include "violite.h"
 
-/* =========================================================================
- * Statistics
- * ========================================================================= */
-
 struct EmbeddedAuthStats {
   int64_t requests{0};
   int64_t grants{0};
@@ -95,7 +90,7 @@ struct EmbeddedAuthStats {
   int64_t cache_misses{0};
   int64_t cache_evictions{0};
   int64_t total_time_us{0};
-  int64_t eval_time_us{0};   // time inside cedar_engine_is_authorized
+  int64_t eval_time_us{0};
 };
 
 static thread_local EmbeddedAuthStats *t_stats_ptr = nullptr;
@@ -157,22 +152,13 @@ static int64_t aggregate_stat(int64_t EmbeddedAuthStats::*member) {
   return total;
 }
 
-/* =========================================================================
- * Plugin-wide state and system variable storage
- * (declared early so helper functions can reference them)
- * ========================================================================= */
-
 static MYSQL_PLUGIN plugin_handle = nullptr;
 static bool plugin_initialized = false;
 
-/* Global Cedar engine, protected by a read-write lock.
- * Readers (is_authorized path) hold shared lock.
- * Writer (reload path) holds exclusive lock.                                */
 static CedarEngine *g_cedar_engine = nullptr;
 static mysql_rwlock_t LOCK_cedar_engine;
 static bool g_engine_lock_initialized = false;
 
-/* System variable storage */
 static char *embedded_cedar_policy_file   = nullptr;
 static char *embedded_cedar_schema_file   = nullptr;
 static char *embedded_cedar_entities_file = nullptr;
@@ -192,10 +178,6 @@ static inline bool should_log_info() {
   return embedded_cedar_log_info && plugin_handle;
 }
 
-/* =========================================================================
- * Authorization cache (identical sharded LRU pattern as cedar_authorization)
- * ========================================================================= */
-
 struct AuthCacheKey {
   std::string user;
   std::string resource;
@@ -211,7 +193,7 @@ struct AuthCacheKey {
 };
 
 struct AuthCacheEntry {
-  int result;  // -1 IGNORE, 0 DENY, 1 GRANT
+  int result;
   std::time_t expires;
   std::list<AuthCacheKey>::iterator lru_iter;
 };
@@ -228,8 +210,8 @@ struct AuthCacheKeyHash {
   }
 };
 
-static constexpr size_t kNumShards   = 64;
-static constexpr size_t kShardShift  = 64 - 6;
+static constexpr size_t kNumShards  = 64;
+static constexpr size_t kShardShift = 64 - 6;
 
 struct alignas(64) CacheShard {
   mysql_mutex_t mutex;
@@ -301,30 +283,16 @@ class ShardedAuthCache {
     }
   }
 
-  size_t size() {
-    size_t total = 0;
-    for (size_t i = 0; i < kNumShards; ++i) {
-      mysql_mutex_lock(&shards_[i].mutex);
-      total += shards_[i].entries.size();
-      mysql_mutex_unlock(&shards_[i].mutex);
-    }
-    return total;
-  }
-
  private:
   size_t get_shard(const AuthCacheKey &key) {
     return AuthCacheKeyHash{}(key) >> kShardShift;
   }
+
   CacheShard shards_[kNumShards];
 };
 
 static ShardedAuthCache g_cache;
 
-/* =========================================================================
- * Engine management helpers
- * ========================================================================= */
-
-/* Read entire file into string. Returns empty string on failure. */
 static std::string read_file(const char *path) {
   if (!path || !path[0]) return {};
   std::ifstream f(path);
@@ -334,13 +302,7 @@ static std::string read_file(const char *path) {
   return ss.str();
 }
 
-/*
- * (Re-)create the Cedar engine from the configured files.
- * Caller must hold WRITE lock on LOCK_cedar_engine, or call from init context.
- * Returns true on success.
- */
 static bool create_engine_from_files() {
-  /* Load file contents */
   std::string policy_text   = read_file(embedded_cedar_policy_file);
   std::string schema_json   = read_file(embedded_cedar_schema_file);
   std::string entities_json = read_file(embedded_cedar_entities_file);
@@ -350,7 +312,6 @@ static bool create_engine_from_files() {
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                             "embedded_cedar: policy file not configured; "
                             "plugin will IGNORE all checks");
-    /* Allow the engine to be null — returning IGNORE is correct */
     return true;
   }
 
@@ -362,7 +323,6 @@ static bool create_engine_from_files() {
     return false;
   }
 
-  /* Load schema first (needed for entity parsing) */
   if (!schema_json.empty()) {
     if (cedar_engine_set_schema_json(engine, schema_json.c_str()) != 0) {
       const char *err = cedar_engine_last_error(engine);
@@ -370,7 +330,6 @@ static bool create_engine_from_files() {
         my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                               "embedded_cedar: failed to load schema: %s",
                               err ? err : "(unknown)");
-      /* Continue — schema is optional */
     } else if (should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "embedded_cedar: schema loaded from %s",
@@ -378,7 +337,6 @@ static bool create_engine_from_files() {
     }
   }
 
-  /* Load entities */
   if (!entities_json.empty()) {
     if (cedar_engine_set_entities_json(engine, entities_json.c_str()) != 0) {
       const char *err = cedar_engine_last_error(engine);
@@ -393,7 +351,6 @@ static bool create_engine_from_files() {
     }
   }
 
-  /* Load policies */
   if (!policy_text.empty()) {
     if (cedar_engine_set_policies(engine, policy_text.c_str()) != 0) {
       const char *err = cedar_engine_last_error(engine);
@@ -410,7 +367,6 @@ static bool create_engine_from_files() {
     }
   }
 
-  /* Atomically replace the global engine */
   CedarEngine *old_engine = g_cedar_engine;
   g_cedar_engine = engine;
   if (old_engine) cedar_engine_free(old_engine);
@@ -421,16 +377,10 @@ static bool create_engine_from_files() {
   return true;
 }
 
-/* =========================================================================
- * Per-privilege Cedar evaluation
- * ========================================================================= */
-
 static int check_single_privilege_embedded(
     const std::string &user_uid, const std::string &resource_id,
     const std::string &privilege, const std::string &day, uint32_t date,
     uint32_t fmt_time, const std::string &client_ip, const std::string &ns) {
-
-  /* Check cache first */
   if (embedded_cedar_cache_enabled) {
     AuthCacheKey key{user_uid, resource_id, privilege, day, date, client_ip};
     AuthCacheEntry entry;
@@ -438,38 +388,28 @@ static int check_single_privilege_embedded(
       if (embedded_cedar_collect_stats) get_thread_stats().cache_hits++;
       if (should_log_info())
         my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                              "embedded_cedar: cache hit for %s → %d",
+                              "embedded_cedar: cache hit for %s -> %d",
                               privilege.c_str(), entry.result);
       return entry.result;
     }
     if (embedded_cedar_collect_stats) get_thread_stats().cache_misses++;
   }
 
-  /* Build Cedar UIDs */
   std::string prefix    = ns.empty() ? "" : ns + "::";
   std::string principal = prefix + "User::\"" + user_uid + "\"";
   std::string action    = prefix + "Action::\"" + privilege + "\"";
   std::string resource  = prefix + resource_id;
 
-  /* Build context JSON
-   * {"day":"mon","date":20250101,"time":120000,"ip":{"__extn":{"fn":"ip","arg":"..."}}} */
   Json::Value ctx;
-  ctx["day"]  = day;
+  ctx["day"] = day;
   ctx["date"] = date;
   ctx["time"] = fmt_time;
-  ctx["ip"]["__extn"]["fn"]  = "ip";
+  ctx["ip"]["__extn"]["fn"] = "ip";
   ctx["ip"]["__extn"]["arg"] = client_ip;
   Json::StreamWriterBuilder wb;
   wb["indentation"] = "";
   std::string ctx_json = Json::writeString(wb, ctx);
 
-  if (should_log_info())
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "embedded_cedar: evaluating principal=%s action=%s "
-                          "resource=%s",
-                          principal.c_str(), action.c_str(), resource.c_str());
-
-  /* Evaluate in-process (shared read lock) */
   CedarDecision decision;
   {
     mysql_rwlock_rdlock(&LOCK_cedar_engine);
@@ -503,17 +443,11 @@ static int check_single_privilege_embedded(
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                             "embedded_cedar: evaluation error for %s",
                             privilege.c_str());
-    return -1;  /* IGNORE — fail open to native ACL */
+    return -1;
   }
 
   int result = (decision == Allow) ? 1 : 0;
 
-  if (should_log_info())
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "embedded_cedar: %s → %s", privilege.c_str(),
-                          result ? "Allow" : "Deny");
-
-  /* Store in cache */
   if (embedded_cedar_cache_enabled) {
     AuthCacheKey key{user_uid, resource_id, privilege, day, date, client_ip};
     std::time_t now = std::time(nullptr);
@@ -525,43 +459,28 @@ static int check_single_privilege_embedded(
   return result;
 }
 
-/* =========================================================================
- * Core access check (iterates privileges)
- * ========================================================================= */
-
 static int embedded_check_access_core(const mysql_authorization_event *event) {
-  if (should_log_info())
-    my_plugin_log_message(
-        &plugin_handle, MY_INFORMATION_LEVEL,
-        "embedded_cedar: check user=%s db=%s table=%s event=%s",
-        event->user.str     ? event->user.str     : "NULL",
-        event->database.str ? event->database.str : "NULL",
-        event->table.str    ? event->table.str    : "NULL",
-        auth_common::auth_event_type_to_string(event->event_subclass).c_str());
-
   if (!plugin_initialized) return -1;
 
   std::string user_uid = auth_common::auth_build_user_uid(event);
-  std::string ns       = embedded_cedar_namespace ? embedded_cedar_namespace : "MySQL";
-  /* resource_id has no namespace prefix — we add it inside check_single_privilege_embedded */
+  std::string ns = embedded_cedar_namespace ? embedded_cedar_namespace : "MySQL";
   std::string resource_id = auth_common::auth_create_resource_identifier(event, "");
 
-  auto time_ctx  = auth_common::auth_get_time_context();
+  auto time_ctx = auth_common::auth_get_time_context();
   std::string ip = auth_common::auth_get_client_ip_cached(event->thd);
 
-  /* Enumerate requested privileges */
   static const std::pair<const char *, int> kStdPrivs[] = {
-      {"SELECT", 0},  {"INSERT", 1},  {"UPDATE", 2},  {"DELETE", 3},
-      {"CREATE", 4},  {"DROP", 5},    {"RELOAD", 6},  {"SHUTDOWN", 7},
-      {"PROCESS", 8}, {"FILE", 9},    {"GRANT", 10},  {"REFERENCES", 11},
-      {"INDEX", 12},  {"ALTER", 13},  {"SHOW DATABASES", 14}, {"SUPER", 15},
+      {"SELECT", 0}, {"INSERT", 1}, {"UPDATE", 2}, {"DELETE", 3},
+      {"CREATE", 4}, {"DROP", 5}, {"RELOAD", 6}, {"SHUTDOWN", 7},
+      {"PROCESS", 8}, {"FILE", 9}, {"GRANT", 10}, {"REFERENCES", 11},
+      {"INDEX", 12}, {"ALTER", 13}, {"SHOW DATABASES", 14}, {"SUPER", 15},
       {"CREATE TEMPORARY TABLES", 16}, {"LOCK TABLES", 17}, {"EXECUTE", 18},
-      {"REPLICATION SLAVE", 19},  {"REPLICATION CLIENT", 20},
-      {"CREATE VIEW", 21},        {"SHOW VIEW", 22},
-      {"CREATE ROUTINE", 23},     {"ALTER ROUTINE", 24},
-      {"CREATE USER", 25},        {"EVENT", 26},
-      {"TRIGGER", 27},            {"CREATE TABLESPACE", 28},
-      {"CREATE ROLE", 29},        {"DROP ROLE", 30}};
+      {"REPLICATION SLAVE", 19}, {"REPLICATION CLIENT", 20},
+      {"CREATE VIEW", 21}, {"SHOW VIEW", 22},
+      {"CREATE ROUTINE", 23}, {"ALTER ROUTINE", 24},
+      {"CREATE USER", 25}, {"EVENT", 26},
+      {"TRIGGER", 27}, {"CREATE TABLESPACE", 28},
+      {"CREATE ROLE", 29}, {"DROP ROLE", 30}};
 
   std::vector<std::pair<std::string, int>> privs_to_check;
   for (const auto &p : kStdPrivs) {
@@ -571,12 +490,14 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
   for (const auto &[priv, offset] : privs::global_acls_map) {
     if (!(event->privileges & (1UL << offset))) continue;
     bool dup = false;
-    for (const auto &e : privs_to_check) { if (e.second == offset) { dup = true; break; } }
+    for (const auto &e : privs_to_check) {
+      if (e.second == offset) { dup = true; break; }
+    }
     if (!dup) privs_to_check.push_back({priv, offset});
   }
 
-  bool is_any_of  = (event->requirement_mode ==
-                     mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF);
+  bool is_any_of = (event->requirement_mode ==
+                    mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF);
   bool authorized = !is_any_of;
   bool any_checked = false;
 
@@ -586,7 +507,7 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
         user_uid, resource_id, p.first,
         time_ctx.day, time_ctx.date, time_ctx.time, ip, ns);
 
-    if (r == -1) return -1;  /* error → IGNORE */
+    if (r == -1) return -1;
 
     if (is_any_of) {
       if (r == 1) { authorized = true; break; }
@@ -595,23 +516,17 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
     }
   }
 
-  if (!any_checked) return 1;  /* no privileges to check → GRANT */
+  if (!any_checked) return 1;
   return authorized ? 1 : 0;
 }
 
-/* =========================================================================
- * Plugin entry point (check_authorization)
- * ========================================================================= */
-
 static mysql_authorization_result_t embedded_cedar_check(
     const mysql_authorization_event *event) {
-
   if (embedded_cedar_collect_stats) get_thread_stats().requests++;
 
   if (!plugin_initialized || !embedded_cedar_enabled)
     return MYSQL_AUTHORIZATION_IGNORE;
 
-  /* Internal discovery probes */
   if (event->requirement_mode ==
       mysql_authorization_event::MYSQL_AUTHZ_REQ_PRESENCE)
     return MYSQL_AUTHORIZATION_GRANT;
@@ -619,14 +534,12 @@ static mysql_authorization_result_t embedded_cedar_check(
   if (event->privileges == 0)
     return MYSQL_AUTHORIZATION_GRANT;
 
-  /* Unsupported event types */
   if (event->event_subclass != MYSQL_AUTHORIZATION_DB_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_TABLE_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_COLUMN_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS)
     return MYSQL_AUTHORIZATION_IGNORE;
 
-  /* Column access: skip unless explicitly enabled */
   if (!embedded_cedar_enable_column_access &&
       event->event_subclass == MYSQL_AUTHORIZATION_COLUMN_ACCESS) {
     if (embedded_cedar_collect_stats) get_thread_stats().grants++;
@@ -636,7 +549,7 @@ static mysql_authorization_result_t embedded_cedar_check(
   int result;
   if (embedded_cedar_collect_stats) {
     auto t0 = std::chrono::high_resolution_clock::now();
-    result   = embedded_check_access_core(event);
+    result = embedded_check_access_core(event);
     auto t1 = std::chrono::high_resolution_clock::now();
     get_thread_stats().total_time_us +=
         std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
@@ -653,30 +566,17 @@ static mysql_authorization_result_t embedded_cedar_check(
   return MYSQL_AUTHORIZATION_DENY;
 }
 
-/* =========================================================================
- * Plugin descriptor
- * ========================================================================= */
-
 static st_mysql_authorization embedded_cedar_descriptor = {
     MYSQL_AUTHORIZATION_INTERFACE_VERSION, embedded_cedar_check};
-
-/* =========================================================================
- * Sysvar callbacks
- * ========================================================================= */
 
 static void on_reload_update(MYSQL_THD, SYS_VAR *, void *, const void *save) {
   bool new_val = *static_cast<const bool *>(save);
   if (!new_val) return;
 
-  if (plugin_handle)
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "embedded_cedar: reloading engine from files...");
-
   mysql_rwlock_wrlock(&LOCK_cedar_engine);
   bool ok = create_engine_from_files();
   mysql_rwlock_unlock(&LOCK_cedar_engine);
 
-  /* Invalidate cache after reload */
   g_cache.clear();
 
   if (!ok && plugin_handle)
@@ -690,16 +590,16 @@ static void on_cache_flush_update(MYSQL_THD, SYS_VAR *, void *, const void *save
   bool new_val = *static_cast<const bool *>(save);
   if (!new_val) return;
   g_cache.clear();
-  if (should_log_info())
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "embedded_cedar: cache flushed");
   embedded_cedar_cache_flush = false;
 }
 
 static void on_reset_stats_update(MYSQL_THD, SYS_VAR *, void *, const void *save) {
   bool new_val = *static_cast<const bool *>(save);
   if (!new_val) return;
-  if (!g_stats_registry_initialized) { embedded_cedar_reset_stats = false; return; }
+  if (!g_stats_registry_initialized) {
+    embedded_cedar_reset_stats = false;
+    return;
+  }
   mysql_mutex_lock(&LOCK_stats_registry);
   for (EmbeddedAuthStats *s : g_stats_registry) {
     s->requests = s->grants = s->denies = s->errors = 0;
@@ -710,25 +610,14 @@ static void on_reset_stats_update(MYSQL_THD, SYS_VAR *, void *, const void *save
   embedded_cedar_reset_stats = false;
 }
 
-/* =========================================================================
- * Plugin init / deinit
- * ========================================================================= */
-
 int embedded_cedar_init(MYSQL_PLUGIN plugin_info) {
   plugin_handle = plugin_info;
 
-  if (plugin_handle)
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "embedded_cedar: initializing...");
-
-  /* Engine lock */
   mysql_rwlock_init(0, &LOCK_cedar_engine);
   g_engine_lock_initialized = true;
 
-  /* Cache */
   g_cache.init();
 
-  /* Stats registry */
   mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
   g_stats_registry_initialized = true;
 
@@ -739,7 +628,6 @@ int embedded_cedar_init(MYSQL_PLUGIN plugin_info) {
 
   plugin_initialized = true;
 
-  /* Load engine from files (best-effort; IGNORE if files not configured yet) */
   if (embedded_cedar_policy_file && embedded_cedar_policy_file[0]) {
     mysql_rwlock_wrlock(&LOCK_cedar_engine);
     create_engine_from_files();
@@ -750,9 +638,6 @@ int embedded_cedar_init(MYSQL_PLUGIN plugin_info) {
                           "use SET GLOBAL embedded_cedar_reload=1 after configuring files");
   }
 
-  if (plugin_handle)
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "embedded_cedar: initialized successfully");
   return 0;
 }
 
@@ -772,74 +657,54 @@ int embedded_cedar_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
   g_stats_registry_initialized = false;
   auth_common::auth_clear_all_client_ip_cache();
 
-  if (plugin_handle)
-    my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                          "embedded_cedar: deinitialized");
   plugin_handle = nullptr;
   return 0;
 }
 
-/* =========================================================================
- * System variables
- * ========================================================================= */
-
 static MYSQL_SYSVAR_BOOL(enabled, embedded_cedar_enabled, PLUGIN_VAR_RQCMDARG,
     "Enable embedded Cedar authorization enforcement", nullptr, nullptr, true);
-
 static MYSQL_SYSVAR_STR(policy_file, embedded_cedar_policy_file,
     PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
     "Path to Cedar policy text file (Cedar policy language syntax)",
     nullptr, nullptr, nullptr);
-
 static MYSQL_SYSVAR_STR(schema_file, embedded_cedar_schema_file,
     PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
     "Path to Cedar schema JSON file",
     nullptr, nullptr, nullptr);
-
 static MYSQL_SYSVAR_STR(entities_file, embedded_cedar_entities_file,
     PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
     "Path to Cedar entities JSON file",
     nullptr, nullptr, nullptr);
-
 static MYSQL_SYSVAR_STR(namespace, embedded_cedar_namespace,
     PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
     "Cedar namespace prefix for entity UIDs (e.g. MySQL)", nullptr, nullptr, "MySQL");
-
 static MYSQL_SYSVAR_BOOL(cache_enabled, embedded_cedar_cache_enabled,
     PLUGIN_VAR_RQCMDARG, "Enable authorization decision cache",
     nullptr, nullptr, true);
-
 static MYSQL_SYSVAR_INT(cache_size, embedded_cedar_cache_size,
     PLUGIN_VAR_RQCMDARG, "Maximum number of cached authorization decisions",
     nullptr, nullptr, 1024, 64, 100000, 0);
-
 static MYSQL_SYSVAR_INT(cache_ttl, embedded_cedar_cache_ttl,
     PLUGIN_VAR_RQCMDARG, "Cache entry TTL in seconds",
     nullptr, nullptr, 300, 1, 86400, 0);
-
 static MYSQL_SYSVAR_BOOL(cache_flush, embedded_cedar_cache_flush,
     PLUGIN_VAR_RQCMDARG,
     "Flush the authorization cache (resets to 0 automatically)",
     nullptr, on_cache_flush_update, false);
-
 static MYSQL_SYSVAR_BOOL(collect_stats, embedded_cedar_collect_stats,
     PLUGIN_VAR_RQCMDARG, "Collect authorization statistics",
     nullptr, nullptr, true);
-
 static MYSQL_SYSVAR_BOOL(reset_stats, embedded_cedar_reset_stats,
     PLUGIN_VAR_RQCMDARG,
     "Reset authorization statistics (resets to 0 automatically)",
     nullptr, on_reset_stats_update, false);
-
 static MYSQL_SYSVAR_BOOL(log_info, embedded_cedar_log_info,
     PLUGIN_VAR_RQCMDARG, "Enable info-level logging (default: disabled)",
     nullptr, nullptr, false);
-
 static MYSQL_SYSVAR_BOOL(enable_column_access, embedded_cedar_enable_column_access,
     PLUGIN_VAR_RQCMDARG,
     "Enable Cedar checks for column-level access (default: disabled)",
     nullptr, nullptr, false);
-
 static MYSQL_SYSVAR_BOOL(reload, embedded_cedar_reload,
     PLUGIN_VAR_RQCMDARG,
     "Reload Cedar engine from configured files (resets to 0 automatically)",
@@ -862,28 +727,24 @@ static SYS_VAR *embedded_cedar_system_vars[] = {
     MYSQL_SYSVAR(reload),
     nullptr};
 
-/* =========================================================================
- * Status variables
- * ========================================================================= */
-
 #define DEF_SHOW_STAT(name, member)                                         \
   static int show_##name(MYSQL_THD, SHOW_VAR *var, char *buff) {           \
     int64_t v = aggregate_stat(&EmbeddedAuthStats::member);                 \
     memcpy(buff, &v, sizeof(v));                                            \
-    var->type  = SHOW_LONGLONG;                                             \
+    var->type = SHOW_LONGLONG;                                              \
     var->value = buff;                                                      \
     return 0;                                                               \
   }
 
-DEF_SHOW_STAT(ec_requests,       requests)
-DEF_SHOW_STAT(ec_grants,         grants)
-DEF_SHOW_STAT(ec_denies,         denies)
-DEF_SHOW_STAT(ec_errors,         errors)
-DEF_SHOW_STAT(ec_cache_hits,     cache_hits)
-DEF_SHOW_STAT(ec_cache_misses,   cache_misses)
-DEF_SHOW_STAT(ec_cache_evictions,cache_evictions)
-DEF_SHOW_STAT(ec_total_time_us,  total_time_us)
-DEF_SHOW_STAT(ec_eval_time_us,   eval_time_us)
+DEF_SHOW_STAT(ec_requests, requests)
+DEF_SHOW_STAT(ec_grants, grants)
+DEF_SHOW_STAT(ec_denies, denies)
+DEF_SHOW_STAT(ec_errors, errors)
+DEF_SHOW_STAT(ec_cache_hits, cache_hits)
+DEF_SHOW_STAT(ec_cache_misses, cache_misses)
+DEF_SHOW_STAT(ec_cache_evictions, cache_evictions)
+DEF_SHOW_STAT(ec_total_time_us, total_time_us)
+DEF_SHOW_STAT(ec_eval_time_us, eval_time_us)
 
 static SHOW_VAR embedded_cedar_status_vars[] = {
     {"embedded_cedar_requests",        (char *)&show_ec_requests,        SHOW_FUNC, SHOW_SCOPE_GLOBAL},
@@ -896,10 +757,6 @@ static SHOW_VAR embedded_cedar_status_vars[] = {
     {"embedded_cedar_total_time_us",   (char *)&show_ec_total_time_us,   SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {"embedded_cedar_eval_time_us",    (char *)&show_ec_eval_time_us,    SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_UNDEF}};
-
-/* =========================================================================
- * Plugin declaration
- * ========================================================================= */
 
 mysql_declare_plugin(embedded_cedar){
     MYSQL_AUTHORIZATION_PLUGIN,
