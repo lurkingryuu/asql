@@ -49,7 +49,13 @@ RUN set -eux; \
       "${LIBCEDAR_PKG_BASE_URL}/${LIBCEDAR_VERSION}/libcedar-${LIBCEDAR_VERSION#v}-${libcedar_target}.tar.gz"; \
     mkdir -p "${LIBCEDAR_PREFIX}"; \
     tar -xzf /tmp/libcedar.tar.gz -C "${LIBCEDAR_PREFIX}"; \
-    rm -f /tmp/libcedar.tar.gz
+    rm -f /tmp/libcedar.tar.gz; \
+    libcedar_pc_dir=""; \
+    for candidate in "${LIBCEDAR_PREFIX}/lib/pkgconfig" "${LIBCEDAR_PREFIX}"/lib/*/pkgconfig; do \
+      if [ -f "${candidate}/libcedar.pc" ]; then libcedar_pc_dir="${candidate}"; break; fi; \
+    done; \
+    test -n "${libcedar_pc_dir}"; \
+    ln -sfn "${libcedar_pc_dir}" "${LIBCEDAR_PREFIX}/lib/pkgconfig"
 
 ENV PKG_CONFIG_PATH="${LIBCEDAR_PREFIX}/lib/pkgconfig"
 ENV CMAKE_PREFIX_PATH="${LIBCEDAR_PREFIX}"
@@ -154,7 +160,8 @@ ENV MYSQL_DATADIR=/var/lib/mysql
 # Copy entrypoint script at the very end to optimize build cache
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh \
-    && echo "${LIBCEDAR_PREFIX}/lib" > /etc/ld.so.conf.d/libcedar.conf \
+    && libcedar_lib_dir="$(dirname "$(readlink -f "${LIBCEDAR_PREFIX}/lib/pkgconfig")")" \
+    && printf "%s\n" "${libcedar_lib_dir}" > /etc/ld.so.conf.d/libcedar.conf \
     && ldconfig
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
