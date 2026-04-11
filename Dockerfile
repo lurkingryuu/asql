@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y \
 ARG LIBCEDAR_VERSION=v0.1.0
 ARG LIBCEDAR_PKG_BASE_URL=https://github.com/lurkingryuu/libcedar/releases/download
 ARG LIBCEDAR_PREFIX=/opt/libcedar
+# TARGETARCH is a Docker predefined platform arg (set by BuildKit / --platform).
+# It must be redeclared inside the stage with ARG to be visible in RUN shells.
+ARG TARGETARCH
 
 # ---- Install packaged libcedar SDK -----------------------------------------
 RUN set -eux; \
