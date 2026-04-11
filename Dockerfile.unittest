@@ -4,6 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Build argument for parallel jobs (defaults to all available CPUs)
 ARG PARALLEL_JOBS
+ARG TARGETARCH
 ARG LIBCEDAR_VERSION=v0.1.0
 ARG LIBCEDAR_PKG_BASE_URL=https://github.com/lurkingryuu/libcedar/releases/download
 ARG LIBCEDAR_PREFIX=/opt/libcedar
@@ -41,10 +42,11 @@ RUN apt-get update && apt-get install -y \
 # silently ignored by Docker and never invalidates this layer.
 ARG LIBCEDAR_CACHE_BUST
 RUN set -eux; \
-    case "${TARGETARCH}" in \
+    target_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "${target_arch}" in \
       amd64) libcedar_target="x86_64-unknown-linux-gnu" ;; \
       arm64) libcedar_target="aarch64-unknown-linux-gnu" ;; \
-      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+      *) echo "Unsupported TARGETARCH: ${target_arch}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/libcedar.tar.gz \
       "${LIBCEDAR_PKG_BASE_URL}/${LIBCEDAR_VERSION}/libcedar-${LIBCEDAR_VERSION#v}-${libcedar_target}.tar.gz"; \
