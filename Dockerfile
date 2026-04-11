@@ -31,37 +31,27 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# ---- Build libcedar (Rust → C ABI) -----------------------------------------
-# libcedar.a is statically linked into embedded_cedar.so at MySQL build time.
-# The source is cloned from GitHub during the image build so remote builders
-# use the same upstream checkout flow.
-ARG LIBCEDAR_REPO=https://github.com/lurkingryuu/libcedar.git
-ARG LIBCEDAR_BRANCH=main
-ARG LIBCEDAR_DIR=/libcedar
+ARG LIBCEDAR_VERSION=v0.1.0
+ARG LIBCEDAR_PKG_BASE_URL=https://github.com/lurkingryuu/libcedar/releases/download
+ARG LIBCEDAR_PREFIX=/opt/libcedar
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --default-toolchain stable --profile minimal
-
-ENV PATH="/root/.cargo/bin:${PATH}"
-
+# ---- Install packaged libcedar SDK -----------------------------------------
 RUN set -eux; \
-    attempt=1; \
-    until [ "$attempt" -gt 5 ]; do \
-      rm -rf "${LIBCEDAR_DIR}"; \
-      if git -c http.version=HTTP/1.1 clone --depth 1 --branch "${LIBCEDAR_BRANCH}" "${LIBCEDAR_REPO}" "${LIBCEDAR_DIR}"; then \
-        break; \
-      fi; \
-      if [ "$attempt" -eq 5 ]; then \
-        echo "libcedar clone failed after ${attempt} attempts" >&2; \
-        exit 1; \
-      fi; \
-      echo "libcedar clone attempt ${attempt} failed; retrying..." >&2; \
-      attempt=$((attempt + 1)); \
-      sleep 5; \
-    done; \
-    cd "${LIBCEDAR_DIR}" && cargo build --release
+    case "${TARGETARCH}" in \
+      amd64) libcedar_target="x86_64-unknown-linux-gnu" ;; \
+      arm64) libcedar_target="aarch64-unknown-linux-gnu" ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/libcedar.tar.gz \
+      "${LIBCEDAR_PKG_BASE_URL}/${LIBCEDAR_VERSION}/libcedar-${LIBCEDAR_VERSION#v}-${libcedar_target}.tar.gz"; \
+    mkdir -p "${LIBCEDAR_PREFIX}"; \
+    tar -xzf /tmp/libcedar.tar.gz -C "${LIBCEDAR_PREFIX}"; \
+    rm -f /tmp/libcedar.tar.gz
 
-# ---- End libcedar build -----------------------------------------------------
+ENV PKG_CONFIG_PATH="${LIBCEDAR_PREFIX}/lib/pkgconfig"
+ENV CMAKE_PREFIX_PATH="${LIBCEDAR_PREFIX}"
+
+# ---- End libcedar install ---------------------------------------------------
 
 RUN mkdir -p /tmp/boost /mysql-build
 
@@ -117,9 +107,6 @@ RUN cmake /mysql-source \
     -DMYSQL_DATADIR=/var/lib/mysql \
     -DSYSCONFDIR=/etc/mysql \
     -DWITH_SSL=system \
-    -DLIBCEDAR_REPO="${LIBCEDAR_REPO}" \
-    -DLIBCEDAR_BRANCH="${LIBCEDAR_BRANCH}" \
-    -DLIBCEDAR_DIR="${LIBCEDAR_DIR}" \
     -G Ninja
 
 RUN if [ -n "${PARALLEL_JOBS}" ]; then \
@@ -131,6 +118,7 @@ RUN if [ -n "${PARALLEL_JOBS}" ]; then \
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG LIBCEDAR_PREFIX=/opt/libcedar
 
 RUN apt-get update && apt-get install -y \
     libssl3 \
@@ -152,6 +140,7 @@ RUN mkdir -p /var/lib/mysql /var/run/mysqld \
     && chown -R mysql:mysql /var/lib/mysql /var/run/mysqld
 
 COPY --from=builder /usr/local/mysql /usr/local/mysql
+COPY --from=builder ${LIBCEDAR_PREFIX} ${LIBCEDAR_PREFIX}
 
 ENV PATH=$PATH:/usr/local/mysql/bin
 
@@ -161,6 +150,8 @@ ENV MYSQL_DATADIR=/var/lib/mysql
 
 # Copy entrypoint script at the very end to optimize build cache
 COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh \
+    && echo "${LIBCEDAR_PREFIX}/lib" > /etc/ld.so.conf.d/libcedar.conf \
+    && ldconfig
 
 ENTRYPOINT ["/docker-entrypoint.sh"]

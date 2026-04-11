@@ -61,4 +61,5 @@ int64_t embedded_cedar_get_auth_stat_errors();
 int64_t embedded_cedar_get_auth_stat_cache_hits();
 int64_t embedded_cedar_get_auth_stat_cache_misses();
 int64_t embedded_cedar_get_auth_stat_cache_evictions();
+const char *embedded_cedar_last_error_for_test();
 #endif

@@ -23,8 +23,6 @@
 
 # Authorization plugins
 
-include(ExternalProject)
-
 # Simple authorization plugin (basic example)
 MYSQL_ADD_PLUGIN(simple_authorization
   simple_authorization.cc
@@ -42,70 +40,12 @@ MYSQL_ADD_PLUGIN(external_authorization
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(JSONCPP jsoncpp)
-endif()
-
-# Embedded Cedar authorization plugin (in-process via libcedar)
-# By default, libcedar is fetched into the build tree and built with cargo.
-# Override LIBCEDAR_DIR to point at an existing checkout instead.
-set(LIBCEDAR_REPO "https://github.com/lurkingryuu/libcedar.git"
-  CACHE STRING "Git repository for libcedar")
-set(LIBCEDAR_BRANCH "main"
-  CACHE STRING "Git branch or tag for libcedar")
-
-set(_embedded_cedar_fetch_libcedar OFF)
-if(NOT DEFINED LIBCEDAR_DIR)
-  set(_embedded_cedar_fetch_libcedar ON)
-  set(LIBCEDAR_DIR "${CMAKE_BINARY_DIR}/external/libcedar"
-      CACHE PATH "Root of the libcedar Rust workspace")
-endif()
-
-find_package(Git REQUIRED)
-find_program(CARGO_EXECUTABLE cargo REQUIRED)
-
-set(LIBCEDAR_HEADER "${LIBCEDAR_DIR}/include/libcedar.h")
-set(LIBCEDAR_STATIC "${LIBCEDAR_DIR}/target/release/libcedar.a")
-
-# CMake validates imported include directories at configure time. When libcedar
-# is fetched via ExternalProject, those directories do not exist yet on a fresh
-# build, so create placeholders up front.
-file(MAKE_DIRECTORY "${LIBCEDAR_DIR}/include")
-file(MAKE_DIRECTORY "${LIBCEDAR_DIR}/target/release")
-
-if(_embedded_cedar_fetch_libcedar)
-  set(_libcedar_source_args
-      GIT_REPOSITORY "${LIBCEDAR_REPO}"
-      GIT_TAG "${LIBCEDAR_BRANCH}"
-      GIT_SHALLOW TRUE
-      SOURCE_DIR "${LIBCEDAR_DIR}")
-elseif(EXISTS "${LIBCEDAR_DIR}/Cargo.toml")
-  set(_libcedar_source_args
-      SOURCE_DIR "${LIBCEDAR_DIR}"
-      DOWNLOAD_COMMAND "")
+  pkg_check_modules(LIBCEDAR REQUIRED IMPORTED_TARGET GLOBAL libcedar)
 else()
   message(FATAL_ERROR
-    "embedded_cedar: LIBCEDAR_DIR='${LIBCEDAR_DIR}' does not contain "
-    "a libcedar checkout (missing Cargo.toml). Either point LIBCEDAR_DIR "
-    "at an existing checkout or omit it to fetch from ${LIBCEDAR_REPO}.")
+    "embedded_cedar requires pkg-config and an installed libcedar package. "
+    "Set PKG_CONFIG_PATH if libcedar is installed in a non-default prefix.")
 endif()
-
-ExternalProject_Add(libcedar_project
-  PREFIX "${CMAKE_BINARY_DIR}/external/libcedar-prefix"
-  ${_libcedar_source_args}
-  UPDATE_DISCONNECTED TRUE
-  CONFIGURE_COMMAND ""
-  BUILD_IN_SOURCE TRUE
-  BUILD_COMMAND "${CARGO_EXECUTABLE}" build --release
-  INSTALL_COMMAND ""
-  BUILD_BYPRODUCTS
-    "${LIBCEDAR_HEADER}"
-    "${LIBCEDAR_STATIC}"
-)
-
-add_library(libcedar_static STATIC IMPORTED GLOBAL)
-set_target_properties(libcedar_static PROPERTIES
-  IMPORTED_LOCATION "${LIBCEDAR_STATIC}"
-  INTERFACE_INCLUDE_DIRECTORIES "${LIBCEDAR_DIR}/include")
-add_dependencies(libcedar_static libcedar_project)
 
 # Link against curl and jsoncpp; add include dirs for jsoncpp
 if(JSONCPP_FOUND)
@@ -141,26 +81,13 @@ MYSQL_ADD_PLUGIN(embedded_cedar
   MODULE_ONLY
   MODULE_OUTPUT_NAME "embedded_cedar")
 
-target_include_directories(embedded_cedar
-  PRIVATE
-    "${LIBCEDAR_DIR}/include")
-add_dependencies(embedded_cedar libcedar_project)
-
 if(JSONCPP_FOUND)
   target_include_directories(embedded_cedar PRIVATE ${JSONCPP_INCLUDE_DIRS})
 else()
   target_include_directories(embedded_cedar PRIVATE /usr/include/jsoncpp)
 endif()
 
-if(UNIX AND NOT APPLE)
-  target_link_libraries(embedded_cedar
-    -Wl,--whole-archive libcedar_static -Wl,--no-whole-archive
-    pthread dl m)
-else()
-  target_link_libraries(embedded_cedar
-    "-Wl,-force_load,${LIBCEDAR_STATIC}"
-    pthread dl)
-endif()
+target_link_libraries(embedded_cedar PRIVATE PkgConfig::LIBCEDAR)
 
 if(JSONCPP_FOUND)
   target_link_libraries(embedded_cedar ${JSONCPP_LIBRARIES})

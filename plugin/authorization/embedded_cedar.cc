@@ -71,6 +71,15 @@ using namespace std;
 
 extern "C" {
 #include "libcedar.h"
+
+#if defined(__GNUC__)
+// `asql` Docker builds may still clone an older libcedar checkout into
+// `/libcedar`. Declare the newer hot-path symbol as weak so we can use it when
+// available and fall back to the older diagnostics-building API otherwise.
+enum CedarDecision cedar_engine_is_authorized_no_diagnostics(
+    struct CedarEngine *engine, const char *principal, const char *action,
+    const char *resource, const char *context_json) __attribute__((weak));
+#endif
 }
 
 #include "plugin/authorization/authorization_common.h"
@@ -95,6 +104,7 @@ struct EmbeddedAuthStats {
 };
 
 static thread_local EmbeddedAuthStats *t_stats_ptr = nullptr;
+static thread_local uint64_t t_stats_registry_epoch_seen = 0;
 
 static pthread_key_t g_stats_key;
 static bool g_stats_key_initialized = false;
@@ -102,6 +112,7 @@ static bool g_stats_key_initialized = false;
 static mysql_mutex_t LOCK_stats_registry;
 static std::vector<EmbeddedAuthStats*> g_stats_registry;
 static bool g_stats_registry_initialized = false;
+static std::atomic<uint64_t> g_stats_registry_epoch{0};
 
 static void unregister_stats(EmbeddedAuthStats *stats) {
   if (!stats || !g_stats_registry_initialized) return;
@@ -119,8 +130,38 @@ static void stats_tls_destructor(void *ptr) {
   delete stats;
 }
 
+static void reset_stats_struct(EmbeddedAuthStats *stats) {
+  if (!stats) return;
+  stats->requests = 0;
+  stats->grants = 0;
+  stats->denies = 0;
+  stats->errors = 0;
+  stats->cache_hits = 0;
+  stats->cache_misses = 0;
+  stats->cache_evictions = 0;
+  stats->total_time_us = 0;
+  stats->eval_time_us = 0;
+}
+
 static EmbeddedAuthStats& get_thread_stats() {
-  if (t_stats_ptr) return *t_stats_ptr;
+  if (t_stats_ptr) {
+    uint64_t epoch = g_stats_registry_epoch.load(std::memory_order_acquire);
+    if (g_stats_registry_initialized && t_stats_registry_epoch_seen != epoch) {
+      if (g_stats_key_initialized)
+        (void)pthread_setspecific(g_stats_key, t_stats_ptr);
+      mysql_mutex_lock(&LOCK_stats_registry);
+      // Guard against duplicate entries: deinit() preserves the registry
+      // vector across init/deinit cycles, so the pointer may already be
+      // present from a prior init cycle.
+      if (std::find(g_stats_registry.begin(), g_stats_registry.end(),
+                    t_stats_ptr) == g_stats_registry.end()) {
+        g_stats_registry.push_back(t_stats_ptr);
+      }
+      mysql_mutex_unlock(&LOCK_stats_registry);
+      t_stats_registry_epoch_seen = epoch;
+    }
+    return *t_stats_ptr;
+  }
 
   EmbeddedAuthStats *stats = nullptr;
   if (g_stats_key_initialized)
@@ -138,6 +179,8 @@ static EmbeddedAuthStats& get_thread_stats() {
       mysql_mutex_lock(&LOCK_stats_registry);
       g_stats_registry.push_back(stats);
       mysql_mutex_unlock(&LOCK_stats_registry);
+      t_stats_registry_epoch_seen =
+          g_stats_registry_epoch.load(std::memory_order_acquire);
     }
   }
   t_stats_ptr = stats;
@@ -146,10 +189,16 @@ static EmbeddedAuthStats& get_thread_stats() {
 
 static int64_t aggregate_stat(int64_t EmbeddedAuthStats::*member) {
   int64_t total = 0;
-  if (!g_stats_registry_initialized) return 0;
+  if (!g_stats_registry_initialized)
+    return t_stats_ptr ? t_stats_ptr->*member : 0;
+  bool saw_current = false;
   mysql_mutex_lock(&LOCK_stats_registry);
-  for (EmbeddedAuthStats *s : g_stats_registry) total += s->*member;
+  for (EmbeddedAuthStats *s : g_stats_registry) {
+    total += s->*member;
+    if (s == t_stats_ptr) saw_current = true;
+  }
   mysql_mutex_unlock(&LOCK_stats_registry);
+  if (t_stats_ptr && !saw_current) total += t_stats_ptr->*member;
   return total;
 }
 
@@ -404,6 +453,21 @@ static std::string build_prefixed_uid(std::string_view prefix,
   return uid;
 }
 
+static inline CedarDecision authorize_embedded_request(CedarEngine *engine,
+                                                       const char *principal,
+                                                       const char *action,
+                                                       const char *resource,
+                                                       const char *context_json) {
+#if defined(__GNUC__)
+  if (cedar_engine_is_authorized_no_diagnostics != nullptr) {
+    return cedar_engine_is_authorized_no_diagnostics(engine, principal, action,
+                                                     resource, context_json);
+  }
+#endif
+  return cedar_engine_is_authorized(engine, principal, action, resource,
+                                    context_json);
+}
+
 static int check_single_privilege_embedded(
     const std::string &user_uid, const std::string &resource_id,
     std::string_view privilege, const std::string &principal,
@@ -446,16 +510,16 @@ static int check_single_privilege_embedded(
 
     if (embedded_cedar_collect_stats) {
       auto t0 = std::chrono::high_resolution_clock::now();
-      decision = cedar_engine_is_authorized_no_diagnostics(
-          g_cedar_engine, principal.c_str(), action.c_str(), resource.c_str(),
-          context_json.c_str());
+      decision = authorize_embedded_request(g_cedar_engine, principal.c_str(),
+                                            action.c_str(), resource.c_str(),
+                                            context_json.c_str());
       auto t1 = std::chrono::high_resolution_clock::now();
       get_thread_stats().eval_time_us +=
           std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
     } else {
-      decision = cedar_engine_is_authorized_no_diagnostics(
-          g_cedar_engine, principal.c_str(), action.c_str(), resource.c_str(),
-          context_json.c_str());
+      decision = authorize_embedded_request(g_cedar_engine, principal.c_str(),
+                                            action.c_str(), resource.c_str(),
+                                            context_json.c_str());
     }
     mysql_rwlock_unlock(&LOCK_cedar_engine);
   }
@@ -643,16 +707,18 @@ static void on_reset_stats_update(MYSQL_THD, SYS_VAR *, void *, const void *save
   bool new_val = *static_cast<const bool *>(save);
   if (!new_val) return;
   if (!g_stats_registry_initialized) {
+    reset_stats_struct(t_stats_ptr);
     embedded_cedar_reset_stats = false;
     return;
   }
+  bool saw_current = false;
   mysql_mutex_lock(&LOCK_stats_registry);
   for (EmbeddedAuthStats *s : g_stats_registry) {
-    s->requests = s->grants = s->denies = s->errors = 0;
-    s->cache_hits = s->cache_misses = s->cache_evictions = 0;
-    s->total_time_us = s->eval_time_us = 0;
+    reset_stats_struct(s);
+    if (s == t_stats_ptr) saw_current = true;
   }
   mysql_mutex_unlock(&LOCK_stats_registry);
+  if (t_stats_ptr && !saw_current) reset_stats_struct(t_stats_ptr);
   embedded_cedar_reset_stats = false;
 }
 
@@ -666,6 +732,7 @@ int embedded_cedar_init(MYSQL_PLUGIN plugin_info) {
 
   mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
   g_stats_registry_initialized = true;
+  g_stats_registry_epoch.fetch_add(1, std::memory_order_acq_rel);
 
   if (!g_stats_key_initialized) {
     if (pthread_key_create(&g_stats_key, stats_tls_destructor) == 0)
@@ -883,16 +950,18 @@ void embedded_cedar_cache_flush_for_test() {
 
 void embedded_cedar_reset_stats_for_test() {
   if (!g_stats_registry_initialized) {
+    reset_stats_struct(t_stats_ptr);
     embedded_cedar_reset_stats = false;
     return;
   }
+  bool saw_current = false;
   mysql_mutex_lock(&LOCK_stats_registry);
   for (EmbeddedAuthStats *s : g_stats_registry) {
-    s->requests = s->grants = s->denies = s->errors = 0;
-    s->cache_hits = s->cache_misses = s->cache_evictions = 0;
-    s->total_time_us = s->eval_time_us = 0;
+    reset_stats_struct(s);
+    if (s == t_stats_ptr) saw_current = true;
   }
   mysql_mutex_unlock(&LOCK_stats_registry);
+  if (t_stats_ptr && !saw_current) reset_stats_struct(t_stats_ptr);
   embedded_cedar_reset_stats = false;
 }
 
@@ -932,30 +1001,41 @@ bool embedded_cedar_cache_contains_for_test(const char *user,
 }
 
 int64_t embedded_cedar_get_auth_stat_requests() {
-  return aggregate_stat(&EmbeddedAuthStats::requests);
+  return t_stats_ptr ? t_stats_ptr->requests
+                     : aggregate_stat(&EmbeddedAuthStats::requests);
 }
 
 int64_t embedded_cedar_get_auth_stat_grants() {
-  return aggregate_stat(&EmbeddedAuthStats::grants);
+  return t_stats_ptr ? t_stats_ptr->grants
+                     : aggregate_stat(&EmbeddedAuthStats::grants);
 }
 
 int64_t embedded_cedar_get_auth_stat_denies() {
-  return aggregate_stat(&EmbeddedAuthStats::denies);
+  return t_stats_ptr ? t_stats_ptr->denies
+                     : aggregate_stat(&EmbeddedAuthStats::denies);
 }
 
 int64_t embedded_cedar_get_auth_stat_errors() {
-  return aggregate_stat(&EmbeddedAuthStats::errors);
+  return t_stats_ptr ? t_stats_ptr->errors
+                     : aggregate_stat(&EmbeddedAuthStats::errors);
 }
 
 int64_t embedded_cedar_get_auth_stat_cache_hits() {
-  return aggregate_stat(&EmbeddedAuthStats::cache_hits);
+  return t_stats_ptr ? t_stats_ptr->cache_hits
+                     : aggregate_stat(&EmbeddedAuthStats::cache_hits);
 }
 
 int64_t embedded_cedar_get_auth_stat_cache_misses() {
-  return aggregate_stat(&EmbeddedAuthStats::cache_misses);
+  return t_stats_ptr ? t_stats_ptr->cache_misses
+                     : aggregate_stat(&EmbeddedAuthStats::cache_misses);
 }
 
 int64_t embedded_cedar_get_auth_stat_cache_evictions() {
-  return aggregate_stat(&EmbeddedAuthStats::cache_evictions);
+  return t_stats_ptr ? t_stats_ptr->cache_evictions
+                     : aggregate_stat(&EmbeddedAuthStats::cache_evictions);
+}
+
+const char *embedded_cedar_last_error_for_test() {
+  return g_cedar_engine ? cedar_engine_last_error(g_cedar_engine) : nullptr;
 }
 #endif

@@ -26,7 +26,7 @@ constexpr const char *kWeekdayNames[] = {
 };
 
 const std::string &unknown_ip_string() {
-  static const std::string kUnknownIp{"unknown"};
+  static const std::string kUnknownIp{"0.0.0.0"};
   return kUnknownIp;
 }
 
@@ -201,18 +201,18 @@ std::string auth_get_client_ip(THD *thd) {
   g_client_ip_raw_calls_for_test.fetch_add(1, std::memory_order_relaxed);
 #endif
   if (!thd || !thd->get_protocol_classic()) {
-    return "unknown";
+    return unknown_ip_string();
   }
   Vio *vio = thd->get_protocol_classic()->get_vio();
   if (!vio) {
-    return "unknown";
+    return unknown_ip_string();
   }
   char ip[INET6_ADDRSTRLEN];
   uint16_t port;
   if (!vio_peer_addr(vio, ip, &port, sizeof(ip))) {
     return std::string(ip);
   }
-  return "unknown";
+  return unknown_ip_string();
 }
 
 // Thread-local cache for client IPs keyed by THD pointer

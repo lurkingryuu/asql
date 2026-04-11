@@ -1,0 +1,41 @@
+name: Validate Libcedar Package Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      libcedar_version:
+        description: "libcedar release tag to install (for example v0.1.0)"
+        required: false
+        default: "v0.1.0"
+        type: string
+      parallel_jobs:
+        description: "Parallel jobs for the MySQL build"
+        required: false
+        default: "4"
+        type: string
+
+jobs:
+  validate-embedded-cedar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build unittest image against packaged libcedar
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.unittest
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            LIBCEDAR_VERSION=${{ inputs.libcedar_version || 'v0.1.0' }}
+            PARALLEL_JOBS=${{ inputs.parallel_jobs || '4' }}

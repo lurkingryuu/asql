@@ -25,6 +25,11 @@ on:
         description: 'Maximum CPUs to use for build'
         required: false
         type: string
+      libcedar_version:
+        description: 'libcedar release tag to install (for example v0.1.0)'
+        required: false
+        default: 'v0.1.0'
+        type: string
 
 env:
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
@@ -100,6 +105,7 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             PARALLEL_JOBS=${{ inputs.max_cpus || 4 }}
+            LIBCEDAR_VERSION=${{ inputs.libcedar_version || 'v0.1.0' }}
 
       - name: Generate artifact attestation
         if: github.event_name != 'pull_request'

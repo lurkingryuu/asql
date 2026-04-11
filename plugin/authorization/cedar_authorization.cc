@@ -156,6 +156,7 @@ struct AuthStats {
 
 // Thread-local stats for reduced contention
 static thread_local AuthStats *t_auth_stats_ptr = nullptr;
+static thread_local uint64_t t_stats_registry_epoch_seen = 0;
 
 // pthread TLS key so we can run a destructor on thread exit.
 static pthread_key_t g_auth_stats_key;
@@ -166,6 +167,7 @@ static bool g_auth_stats_key_initialized = false;
 static mysql_mutex_t LOCK_stats_registry;
 static std::vector<AuthStats*> g_stats_registry;
 static bool g_stats_registry_initialized = false;
+static std::atomic<uint64_t> g_stats_registry_epoch{0};
 
 static void unregister_stats(AuthStats *stats) {
   if (!stats || !g_stats_registry_initialized) return;
@@ -187,9 +189,40 @@ static void auth_stats_tls_destructor(void *ptr) {
   delete stats;
 }
 
+static void reset_stats_struct(AuthStats *stats) {
+  if (!stats) return;
+  stats->requests = 0;
+  stats->grants = 0;
+  stats->denies = 0;
+  stats->errors = 0;
+  stats->cache_hits = 0;
+  stats->cache_misses = 0;
+  stats->cache_evictions = 0;
+  stats->total_time_us = 0;
+  stats->remote_time_us = 0;
+}
+
 // Register current thread's stats (called on first use)
 static AuthStats& get_thread_stats() {
-  if (t_auth_stats_ptr) return *t_auth_stats_ptr;
+  if (t_auth_stats_ptr) {
+    uint64_t epoch = g_stats_registry_epoch.load(std::memory_order_acquire);
+    if (g_stats_registry_initialized && t_stats_registry_epoch_seen != epoch) {
+      if (g_auth_stats_key_initialized) {
+        (void)pthread_setspecific(g_auth_stats_key, t_auth_stats_ptr);
+      }
+      mysql_mutex_lock(&LOCK_stats_registry);
+      // Guard against duplicate entries: deinit() deliberately preserves the
+      // registry vector across init/deinit cycles, so the pointer may already
+      // be present from a prior init cycle.
+      if (std::find(g_stats_registry.begin(), g_stats_registry.end(),
+                    t_auth_stats_ptr) == g_stats_registry.end()) {
+        g_stats_registry.push_back(t_auth_stats_ptr);
+      }
+      mysql_mutex_unlock(&LOCK_stats_registry);
+      t_stats_registry_epoch_seen = epoch;
+    }
+    return *t_auth_stats_ptr;
+  }
 
   AuthStats *stats = nullptr;
   if (g_auth_stats_key_initialized) {
@@ -211,6 +244,8 @@ static AuthStats& get_thread_stats() {
       mysql_mutex_lock(&LOCK_stats_registry);
       g_stats_registry.push_back(stats);
       mysql_mutex_unlock(&LOCK_stats_registry);
+      t_stats_registry_epoch_seen =
+          g_stats_registry_epoch.load(std::memory_order_acquire);
     }
   }
 
@@ -221,12 +256,16 @@ static AuthStats& get_thread_stats() {
 // Aggregate all thread-local stats
 static int64_t aggregate_stat(int64_t AuthStats::*member) {
   int64_t total = 0;
-  if (!g_stats_registry_initialized) return 0;
+  if (!g_stats_registry_initialized)
+    return t_auth_stats_ptr ? t_auth_stats_ptr->*member : 0;
+  bool saw_current = false;
   mysql_mutex_lock(&LOCK_stats_registry);
   for (AuthStats* stats : g_stats_registry) {
     total += stats->*member;
+    if (stats == t_auth_stats_ptr) saw_current = true;
   }
   mysql_mutex_unlock(&LOCK_stats_registry);
+  if (t_auth_stats_ptr && !saw_current) total += t_auth_stats_ptr->*member;
   return total;
 }
 
@@ -1160,6 +1199,7 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
    // Initialize stats registry
    mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
    g_stats_registry_initialized = true;
+   g_stats_registry_epoch.fetch_add(1, std::memory_order_acq_rel);
 
    if (!g_auth_stats_key_initialized) {
      if (pthread_key_create(&g_auth_stats_key, auth_stats_tls_destructor) == 0) {
@@ -1205,16 +1245,9 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
    // For unit tests, don't clear the registry to preserve thread registration.
    // Just reset the stats values.
    for (AuthStats* stats : g_stats_registry) {
-     stats->requests = 0;
-     stats->grants = 0;
-     stats->denies = 0;
-     stats->errors = 0;
-     stats->cache_hits = 0;
-     stats->cache_misses = 0;
-     stats->cache_evictions = 0;
-     stats->total_time_us = 0;
-     stats->remote_time_us = 0;
+     reset_stats_struct(stats);
    }
+   reset_stats_struct(t_auth_stats_ptr);
   // Don't set g_stats_registry_initialized = false;
   // Don't clear g_stats_registry;
   // Don't destroy the mutex;
@@ -1339,22 +1372,18 @@ static void cedar_authorization_reset_stats_update(
   bool new_val = *static_cast<const bool *>(save);
   if (new_val) {
     if (!g_stats_registry_initialized) {
+      reset_stats_struct(t_auth_stats_ptr);
       cedar_authorization_reset_stats = false;
       return;
     }
+    bool saw_current = false;
     mysql_mutex_lock(&LOCK_stats_registry);
     for (AuthStats* stats : g_stats_registry) {
-      stats->requests = 0;
-      stats->grants = 0;
-      stats->denies = 0;
-      stats->errors = 0;
-      stats->cache_hits = 0;
-      stats->cache_misses = 0;
-      stats->cache_evictions = 0;
-      stats->total_time_us = 0;
-      stats->remote_time_us = 0;
+      reset_stats_struct(stats);
+      if (stats == t_auth_stats_ptr) saw_current = true;
     }
     mysql_mutex_unlock(&LOCK_stats_registry);
+    if (t_auth_stats_ptr && !saw_current) reset_stats_struct(t_auth_stats_ptr);
 
     if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -1525,28 +1554,26 @@ bool cedar_cache_contains_for_test(const char *user, const char *resource,
 
 // Stats testing helpers
 int64_t cedar_get_auth_stat_requests() {
-  return aggregate_stat(&AuthStats::requests);
+  return t_auth_stats_ptr ? t_auth_stats_ptr->requests
+                          : aggregate_stat(&AuthStats::requests);
 }
 int64_t cedar_get_auth_stat_grants() {
-  return aggregate_stat(&AuthStats::grants);
+  return t_auth_stats_ptr ? t_auth_stats_ptr->grants
+                          : aggregate_stat(&AuthStats::grants);
 }
 int64_t cedar_get_auth_stat_denies() {
-  return aggregate_stat(&AuthStats::denies);
+  return t_auth_stats_ptr ? t_auth_stats_ptr->denies
+                          : aggregate_stat(&AuthStats::denies);
 }
 void cedar_reset_stats_for_test() {
+  bool saw_current = false;
   mysql_mutex_lock(&LOCK_stats_registry);
   for (AuthStats* stats : g_stats_registry) {
-    stats->requests = 0;
-    stats->grants = 0;
-    stats->denies = 0;
-    stats->errors = 0;
-    stats->cache_hits = 0;
-    stats->cache_misses = 0;
-    stats->cache_evictions = 0;
-    stats->total_time_us = 0;
-    stats->remote_time_us = 0;
+    reset_stats_struct(stats);
+    if (stats == t_auth_stats_ptr) saw_current = true;
   }
   mysql_mutex_unlock(&LOCK_stats_registry);
+  if (t_auth_stats_ptr && !saw_current) reset_stats_struct(t_auth_stats_ptr);
 }
 void cedar_set_collect_stats(bool enable) {
   cedar_authorization_collect_stats = enable;

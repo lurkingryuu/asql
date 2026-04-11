@@ -141,19 +141,46 @@ const char *kBaseSchema = R"JSON({
       "SELECT": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Database", "Table", "Column"]
+          "resourceTypes": ["Database", "Table", "Column"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "date": { "type": "Long" },
+              "time": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       },
       "UPDATE": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Table"]
+          "resourceTypes": ["Table"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "date": { "type": "Long" },
+              "time": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       },
       "EXECUTE": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Routine"]
+          "resourceTypes": ["Routine"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "date": { "type": "Long" },
+              "time": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       }
     }
@@ -172,6 +199,15 @@ const char *kGroupEntities = R"JSON([
     "parents": []
   }
 ])JSON";
+
+void expect_embedded_result(const mysql_authorization_event &ev,
+                            mysql_authorization_result_t expected) {
+  auto actual = embedded_cedar_check(&ev);
+  EXPECT_EQ(actual, expected)
+      << (embedded_cedar_last_error_for_test()
+              ? embedded_cedar_last_error_for_test()
+              : "(no cedar error)");
+}
 
 }  // namespace
 
@@ -243,7 +279,7 @@ class EmbeddedCedarInitializedTest : public ::testing::Test {
 TEST(EmbeddedCedarTest, NotInitializedReturnsIgnore) {
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", kSelectAcl);
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_IGNORE);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_IGNORE);
 }
 
 TEST_F(EmbeddedCedarInitializedTest, ReloadedPoliciesAuthorizeTableDatabaseAndRoutine) {
@@ -265,12 +301,12 @@ permit(principal == MySQL::User::"alice", action == MySQL::Action::"EXECUTE", re
   fill_basic_routine_event(routine_ev, "alice", "test", "calculate_bonus",
                            kExecuteAcl);
 
-  EXPECT_EQ(embedded_cedar_check(&db_ev), MYSQL_AUTHORIZATION_GRANT);
-  EXPECT_EQ(embedded_cedar_check(&table_ev), MYSQL_AUTHORIZATION_GRANT);
-  EXPECT_EQ(embedded_cedar_check(&routine_ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(db_ev, MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(table_ev, MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(routine_ev, MYSQL_AUTHORIZATION_GRANT);
 
   fill_basic_table_event(table_ev, "bob", "test", "users", kSelectAcl);
-  EXPECT_EQ(embedded_cedar_check(&table_ev), MYSQL_AUTHORIZATION_DENY);
+  expect_embedded_result(table_ev, MYSQL_AUTHORIZATION_DENY);
 }
 
 TEST_F(EmbeddedCedarInitializedTest, ColumnAccessToggleControlsEnforcement) {
@@ -285,11 +321,11 @@ permit(principal == MySQL::User::"alice", action == MySQL::Action::"SELECT", res
   fill_basic_column_event(col_ev, "alice", "test", "users", "name", kSelectAcl);
 
   embedded_cedar_set_enable_column_access_for_test(false);
-  EXPECT_EQ(embedded_cedar_check(&col_ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(col_ev, MYSQL_AUTHORIZATION_GRANT);
 
   embedded_cedar_reset_stats_for_test();
   embedded_cedar_set_enable_column_access_for_test(true);
-  EXPECT_EQ(embedded_cedar_check(&col_ev), MYSQL_AUTHORIZATION_DENY);
+  expect_embedded_result(col_ev, MYSQL_AUTHORIZATION_DENY);
   EXPECT_EQ(embedded_cedar_get_auth_stat_requests(), 1);
   EXPECT_EQ(embedded_cedar_get_auth_stat_denies(), 1);
 }
@@ -304,12 +340,12 @@ permit(principal == MySQL::User::"alice", action == MySQL::Action::"SELECT", res
 
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", kSelectAcl);
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
 
   write_policy("this is not valid cedar");
   EXPECT_FALSE(reload_from_files());
 
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
 }
 
 TEST_F(EmbeddedCedarInitializedTest, ReloadPicksUpUpdatedPolicyFiles) {
@@ -325,16 +361,16 @@ permit(principal == MySQL::User::"alice", action == MySQL::Action::"SELECT", res
   fill_basic_table_event(alice_ev, "alice", "test", "users", kSelectAcl);
   fill_basic_table_event(bob_ev, "bob", "test", "users", kSelectAcl);
 
-  EXPECT_EQ(embedded_cedar_check(&alice_ev), MYSQL_AUTHORIZATION_GRANT);
-  EXPECT_EQ(embedded_cedar_check(&bob_ev), MYSQL_AUTHORIZATION_DENY);
+  expect_embedded_result(alice_ev, MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(bob_ev, MYSQL_AUTHORIZATION_DENY);
 
   write_policy(R"CEDAR(
 permit(principal == MySQL::User::"bob", action == MySQL::Action::"SELECT", resource == MySQL::Table::"test.users");
 )CEDAR");
   ASSERT_TRUE(reload_from_files());
 
-  EXPECT_EQ(embedded_cedar_check(&alice_ev), MYSQL_AUTHORIZATION_DENY);
-  EXPECT_EQ(embedded_cedar_check(&bob_ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(alice_ev, MYSQL_AUTHORIZATION_DENY);
+  expect_embedded_result(bob_ev, MYSQL_AUTHORIZATION_GRANT);
 }
 
 TEST_F(EmbeddedCedarInitializedTest, GroupEntitiesAndNamespaceDriveAuthorization) {
@@ -349,7 +385,16 @@ TEST_F(EmbeddedCedarInitializedTest, GroupEntitiesAndNamespaceDriveAuthorization
       "SELECT": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Table"]
+          "resourceTypes": ["Table"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "date": { "type": "Long" },
+              "time": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       }
     }
@@ -367,8 +412,8 @@ permit(principal in MySQL::Group::"readers", action == MySQL::Action::"SELECT", 
   fill_basic_table_event(alice_ev, "alice", "test", "users", kSelectAcl);
   fill_basic_table_event(bob_ev, "bob", "test", "users", kSelectAcl);
 
-  EXPECT_EQ(embedded_cedar_check(&alice_ev), MYSQL_AUTHORIZATION_GRANT);
-  EXPECT_EQ(embedded_cedar_check(&bob_ev), MYSQL_AUTHORIZATION_DENY);
+  expect_embedded_result(alice_ev, MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(bob_ev, MYSQL_AUTHORIZATION_DENY);
 }
 
 TEST_F(EmbeddedCedarInitializedTest, AnyOfUsesMixedPrivilegeResults) {
@@ -383,10 +428,10 @@ permit(principal == MySQL::User::"alice", action == MySQL::Action::"UPDATE", res
   fill_basic_table_event(ev, "alice", "test", "users", kSelectAcl | kUpdateAcl);
   ev.requirement_mode = mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF;
 
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
 
   ev.requirement_mode = mysql_authorization_event::MYSQL_AUTHZ_REQ_ALL_OF;
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_DENY);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_DENY);
 }
 
 TEST_F(EmbeddedCedarInitializedTest, SchemaValidationErrorFailsOpenAndCountsError) {
@@ -400,7 +445,16 @@ TEST_F(EmbeddedCedarInitializedTest, SchemaValidationErrorFailsOpenAndCountsErro
       "SELECT": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Table"]
+          "resourceTypes": ["Table"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "date": { "type": "Long" },
+              "time": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       }
     }
@@ -415,7 +469,7 @@ permit(principal == MySQL::User::"alice", action == MySQL::Action::"SELECT", res
   mysql_authorization_event db_ev{};
   fill_basic_db_event(db_ev, "alice", "test", kSelectAcl);
 
-  EXPECT_EQ(embedded_cedar_check(&db_ev), MYSQL_AUTHORIZATION_IGNORE);
+  expect_embedded_result(db_ev, MYSQL_AUTHORIZATION_IGNORE);
   EXPECT_EQ(embedded_cedar_get_auth_stat_requests(), 1);
   EXPECT_EQ(embedded_cedar_get_auth_stat_errors(), 1);
 }
@@ -434,8 +488,8 @@ permit(principal == MySQL::User::"alice", action == MySQL::Action::"SELECT", res
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, "alice", "test", "users", kSelectAcl);
 
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
   EXPECT_EQ(embedded_cedar_get_auth_stat_cache_misses(), 1);
   EXPECT_EQ(embedded_cedar_get_auth_stat_cache_hits(), 1);
 
@@ -445,12 +499,12 @@ permit(principal == MySQL::User::"alice", action == MySQL::Action::"SELECT", res
   const std::string resource = auth_create_resource_identifier(&probe, "");
   EXPECT_TRUE(embedded_cedar_cache_contains_for_test(
       "alice", resource.c_str(), "SELECT", time_ctx.day.c_str(), time_ctx.date,
-      "unknown"));
+      "0.0.0.0"));
 
   ::sleep(2);
   EXPECT_FALSE(embedded_cedar_cache_contains_for_test(
       "alice", resource.c_str(), "SELECT", time_ctx.day.c_str(), time_ctx.date,
-      "unknown"));
+      "0.0.0.0"));
 }
 
 TEST_F(EmbeddedCedarInitializedTest, CacheEvictsLeastRecentlyUsedWithinShard) {
@@ -474,7 +528,7 @@ permit(principal == MySQL::User::"user_2", action == MySQL::Action::"SELECT", re
   AuthTimeContext time_ctx = auth_get_time_context();
   const std::string resource = auth_create_resource_identifier(&base, "");
   const std::string action = "SELECT";
-  const std::string ip = "unknown";
+  const std::string ip = "0.0.0.0";
 
   std::vector<std::string> users =
       find_users_same_shard(3, resource, action, time_ctx.day, time_ctx.date, ip);
@@ -495,13 +549,13 @@ permit(principal == MySQL::User::"user_2", action == MySQL::Action::"SELECT", re
 
   mysql_authorization_event ev{};
   fill_basic_table_event(ev, users[0].c_str(), "test", "users", kSelectAcl);
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
   fill_basic_table_event(ev, users[1].c_str(), "test", "users", kSelectAcl);
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
   fill_basic_table_event(ev, users[0].c_str(), "test", "users", kSelectAcl);
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
   fill_basic_table_event(ev, users[2].c_str(), "test", "users", kSelectAcl);
-  EXPECT_EQ(embedded_cedar_check(&ev), MYSQL_AUTHORIZATION_GRANT);
+  expect_embedded_result(ev, MYSQL_AUTHORIZATION_GRANT);
 
   EXPECT_TRUE(embedded_cedar_cache_contains_for_test(
       users[0].c_str(), resource.c_str(), action.c_str(), time_ctx.day.c_str(),

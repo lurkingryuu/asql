@@ -4,9 +4,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Build argument for parallel jobs (defaults to all available CPUs)
 ARG PARALLEL_JOBS
-ARG LIBCEDAR_REPO=https://github.com/lurkingryuu/libcedar.git
-ARG LIBCEDAR_BRANCH=main
-ARG LIBCEDAR_DIR=/libcedar
+ARG LIBCEDAR_VERSION=v0.1.0
+ARG LIBCEDAR_PKG_BASE_URL=https://github.com/lurkingryuu/libcedar/releases/download
+ARG LIBCEDAR_PREFIX=/opt/libcedar
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -34,15 +34,26 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --default-toolchain stable --profile minimal
+# Install the packaged libcedar SDK from GitHub Releases.
+# LIBCEDAR_CACHE_BUST can be passed from the host (e.g. as a timestamp) to
+# force Docker to re-download the tarball even when all earlier layers are
+# cached.  Without a declared ARG, --build-arg LIBCEDAR_CACHE_BUST=... is
+# silently ignored by Docker and never invalidates this layer.
+ARG LIBCEDAR_CACHE_BUST
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) libcedar_target="x86_64-unknown-linux-gnu" ;; \
+      arm64) libcedar_target="aarch64-unknown-linux-gnu" ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/libcedar.tar.gz \
+      "${LIBCEDAR_PKG_BASE_URL}/${LIBCEDAR_VERSION}/libcedar-${LIBCEDAR_VERSION#v}-${libcedar_target}.tar.gz"; \
+    mkdir -p "${LIBCEDAR_PREFIX}"; \
+    tar -xzf /tmp/libcedar.tar.gz -C "${LIBCEDAR_PREFIX}"; \
+    rm -f /tmp/libcedar.tar.gz
 
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Pre-build libcedar so the ninja step has the static lib ready and never
-# needs to perform its own network fetch. Requires --network=host on docker build.
-RUN git clone --depth 1 --branch "${LIBCEDAR_BRANCH}" "${LIBCEDAR_REPO}" "${LIBCEDAR_DIR}" \
-    && cd "${LIBCEDAR_DIR}" && cargo build --release
+ENV PKG_CONFIG_PATH="${LIBCEDAR_PREFIX}/lib/pkgconfig"
+ENV CMAKE_PREFIX_PATH="${LIBCEDAR_PREFIX}"
 
 RUN mkdir -p /tmp/boost /mysql-build
 
@@ -99,9 +110,6 @@ RUN cmake /mysql-source \
     -DMYSQL_DATADIR=/var/lib/mysql \
     -DSYSCONFDIR=/etc/mysql \
     -DWITH_SSL=system \
-    -DLIBCEDAR_REPO="${LIBCEDAR_REPO}" \
-    -DLIBCEDAR_BRANCH="${LIBCEDAR_BRANCH}" \
-    -DLIBCEDAR_DIR="${LIBCEDAR_DIR}" \
     -G Ninja
 
 # Build the server, plugins, and focused test binaries needed by the unified

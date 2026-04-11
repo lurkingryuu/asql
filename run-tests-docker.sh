@@ -28,6 +28,7 @@ echo "Building ASQL Unittest Docker image..."
 docker buildx build \
     --network "${BUILD_NETWORK_MODE}" \
     --load \
+    --build-arg "LIBCEDAR_CACHE_BUST=$(date +%s)" \
     -t asql-unittest \
     -f Dockerfile.unittest \
     .

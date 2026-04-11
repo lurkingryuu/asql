@@ -256,7 +256,7 @@ TEST_F(CedarPluginInitializedTest, CacheLRUEvictionWithinShard) {
   AuthTimeContext time_ctx = auth_get_time_context();
   const std::string day = time_ctx.day;
   const uint32_t date = time_ctx.date;
-  const std::string ip = "unknown";
+  const std::string ip = "0.0.0.0";
 
   mysql_authorization_event base{};
   fill_basic_table_event(base, "seed", "test", "users", 1UL << 0);

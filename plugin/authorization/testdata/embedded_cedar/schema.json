@@ -25,43 +25,106 @@
       "SELECT": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Database", "Table", "Column"]
+          "resourceTypes": ["Database", "Table", "Column"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "time": { "type": "Long" },
+              "date": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       },
       "INSERT": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Table"]
+          "resourceTypes": ["Table"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "time": { "type": "Long" },
+              "date": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       },
       "UPDATE": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Table"]
+          "resourceTypes": ["Table"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "time": { "type": "Long" },
+              "date": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       },
       "DELETE": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Table"]
+          "resourceTypes": ["Table"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "time": { "type": "Long" },
+              "date": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       },
       "EXECUTE": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Routine"]
+          "resourceTypes": ["Routine"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "time": { "type": "Long" },
+              "date": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       },
       "CREATE": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Database", "Table"]
+          "resourceTypes": ["Database", "Table"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "time": { "type": "Long" },
+              "date": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       },
       "DROP": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["Database", "Table"]
+          "resourceTypes": ["Database", "Table"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "day": { "type": "String" },
+              "time": { "type": "Long" },
+              "date": { "type": "Long" },
+              "ip": { "type": "Extension", "name": "ipaddr" }
+            }
+          }
         }
       }
     }
