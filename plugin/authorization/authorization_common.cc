@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cctype>
 #include <ctime>
 #include <sstream>
@@ -17,6 +18,25 @@
 using namespace std;
 
 namespace auth_common {
+
+namespace {
+
+constexpr const char *kWeekdayNames[] = {
+    "sun", "mon", "tue", "wed", "thu", "fri", "sat"
+};
+
+const std::string &unknown_ip_string() {
+  static const std::string kUnknownIp{"unknown"};
+  return kUnknownIp;
+}
+
+void append_uint32(std::string &out, uint32_t value) {
+  char buffer[10];
+  auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value);
+  if (ec == std::errc()) out.append(buffer, ptr);
+}
+
+}  // namespace
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 static std::atomic<int64_t> g_client_ip_raw_calls_for_test{0};
@@ -118,27 +138,50 @@ std::string auth_create_resource_identifier(
 }
 
 AuthTimeContext auth_get_time_context() {
-  AuthTimeContext ctx;
   std::time_t currentTime = std::time(nullptr);
-  std::tm *now = std::localtime(&currentTime);
-  
-  // Day (lowercase 3-char)
-  char dayString[4];
-  std::strftime(dayString, sizeof(dayString), "%a", now);
-  ctx.day = std::string(dayString);
-  std::transform(ctx.day.begin(), ctx.day.end(), ctx.day.begin(), ::tolower);
-  
-  // Date (YYYYMMDD)
-  char dateString[9];
-  std::strftime(dateString, sizeof(dateString), "%Y%m%d", now);
-  ctx.date = std::stoul(dateString);
-  
-  // Time (HHMMSS)
-  char timeString[7];
-  std::strftime(timeString, sizeof(timeString), "%H%M%S", now);
-  ctx.time = std::stoul(timeString);
-  
-  return ctx;
+  struct CachedTimeContext {
+    std::time_t epoch_second{-1};
+    AuthTimeContext ctx{};
+  };
+
+  static thread_local CachedTimeContext cached;
+  if (cached.epoch_second == currentTime) return cached.ctx;
+
+  std::tm now{};
+#if defined(_WIN32)
+  localtime_s(&now, &currentTime);
+#else
+  localtime_r(&currentTime, &now);
+#endif
+
+  AuthTimeContext ctx;
+  ctx.day = kWeekdayNames[now.tm_wday % 7];
+  ctx.date = static_cast<uint32_t>(now.tm_year + 1900) * 10000U +
+             static_cast<uint32_t>(now.tm_mon + 1) * 100U +
+             static_cast<uint32_t>(now.tm_mday);
+  ctx.time = static_cast<uint32_t>(now.tm_hour) * 10000U +
+             static_cast<uint32_t>(now.tm_min) * 100U +
+             static_cast<uint32_t>(now.tm_sec);
+
+  cached.epoch_second = currentTime;
+  cached.ctx = ctx;
+  return cached.ctx;
+}
+
+std::string auth_build_context_json(const AuthTimeContext &ctx,
+                                    std::string_view client_ip) {
+  std::string json;
+  json.reserve(80 + ctx.day.size() + client_ip.size());
+  json.append("{\"day\":\"");
+  json.append(ctx.day);
+  json.append("\",\"date\":");
+  append_uint32(json, ctx.date);
+  json.append(",\"time\":");
+  append_uint32(json, ctx.time);
+  json.append(",\"ip\":{\"__extn\":{\"fn\":\"ip\",\"arg\":\"");
+  json.append(client_ip.data(), client_ip.size());
+  json.append("\"}}}");
+  return json;
 }
 
 std::string auth_get_day() {
@@ -176,21 +219,23 @@ std::string auth_get_client_ip(THD *thd) {
 // Using thread_local to avoid mutex contention
 static thread_local std::unordered_map<THD*, std::string> t_client_ip_cache;
 
-std::string auth_get_client_ip_cached(THD *thd) {
+const std::string &auth_get_client_ip_cached_ref(THD *thd) {
   if (!thd) {
-    return "unknown";
+    return unknown_ip_string();
   }
-  
-  // Check cache first
+
   auto it = t_client_ip_cache.find(thd);
   if (it != t_client_ip_cache.end()) {
     return it->second;
   }
-  
-  // Cache miss - do the actual lookup
+
   std::string ip = auth_get_client_ip(thd);
-  t_client_ip_cache[thd] = ip;
-  return ip;
+  auto [inserted, _] = t_client_ip_cache.emplace(thd, std::move(ip));
+  return inserted->second;
+}
+
+std::string auth_get_client_ip_cached(THD *thd) {
+  return auth_get_client_ip_cached_ref(thd);
 }
 
 void auth_clear_client_ip_cache(THD *thd) {

@@ -50,9 +50,6 @@
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 
-#include <json/json.h>
-#include <json/value.h>
-
 #include <new>
 #include <pthread.h>
 #include <fstream>
@@ -68,6 +65,7 @@
 #include <ctime>
 #include <list>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
 using namespace std;
 
@@ -254,9 +252,10 @@ class ShardedAuthCache {
     return false;
   }
 
-  void put(const AuthCacheKey &key, const AuthCacheEntry &entry, int max_per_shard) {
+  int put(AuthCacheKey key, const AuthCacheEntry &entry, int max_per_shard) {
     size_t idx = get_shard(key);
     CacheShard &s = shards_[idx];
+    int evictions = 0;
     mysql_mutex_lock(&s.mutex);
     auto existing = s.entries.find(key);
     if (existing != s.entries.end()) {
@@ -264,17 +263,19 @@ class ShardedAuthCache {
       existing->second.result  = entry.result;
       existing->second.expires = entry.expires;
       mysql_mutex_unlock(&s.mutex);
-      return;
+      return 0;
     }
     while (static_cast<int>(s.entries.size()) >= max_per_shard && !s.lru_list.empty()) {
       s.entries.erase(s.lru_list.back());
       s.lru_list.pop_back();
+      ++evictions;
     }
     s.lru_list.push_front(key);
     AuthCacheEntry ne = entry;
     ne.lru_iter = s.lru_list.begin();
-    s.entries[key] = ne;
+    s.entries.emplace(std::move(key), ne);
     mysql_mutex_unlock(&s.mutex);
+    return evictions;
   }
 
   void clear() {
@@ -390,38 +391,47 @@ static bool create_engine_from_files() {
   return true;
 }
 
+static std::string build_prefixed_uid(std::string_view prefix,
+                                      std::string_view entity_type,
+                                      std::string_view entity_id) {
+  std::string uid;
+  uid.reserve(prefix.size() + entity_type.size() + entity_id.size() + 5);
+  uid.append(prefix.data(), prefix.size());
+  uid.append(entity_type.data(), entity_type.size());
+  uid.append("::\"");
+  uid.append(entity_id.data(), entity_id.size());
+  uid.push_back('"');
+  return uid;
+}
+
 static int check_single_privilege_embedded(
     const std::string &user_uid, const std::string &resource_id,
-    const std::string &privilege, const std::string &day, uint32_t date,
-    uint32_t fmt_time, const std::string &client_ip, const std::string &ns) {
+    std::string_view privilege, const std::string &principal,
+    const std::string &resource, const std::string &action_prefix,
+    const std::string &context_json, const std::string &day, uint32_t date,
+    const std::string &client_ip) {
+  AuthCacheKey key;
   if (embedded_cedar_cache_enabled) {
-    AuthCacheKey key{user_uid, resource_id, privilege, day, date, client_ip};
+    key = AuthCacheKey{user_uid, resource_id, std::string(privilege), day, date,
+                       client_ip};
     AuthCacheEntry entry;
     if (g_cache.get(key, entry)) {
       if (embedded_cedar_collect_stats) get_thread_stats().cache_hits++;
       if (should_log_info())
         my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
-                              "embedded_cedar: cache hit for %s -> %d",
-                              privilege.c_str(), entry.result);
+                              "embedded_cedar: cache hit for %.*s -> %d",
+                              static_cast<int>(privilege.size()),
+                              privilege.data(), entry.result);
       return entry.result;
     }
     if (embedded_cedar_collect_stats) get_thread_stats().cache_misses++;
   }
 
-  std::string prefix    = ns.empty() ? "" : ns + "::";
-  std::string principal = prefix + "User::\"" + user_uid + "\"";
-  std::string action    = prefix + "Action::\"" + privilege + "\"";
-  std::string resource  = prefix + resource_id;
-
-  Json::Value ctx;
-  ctx["day"] = day;
-  ctx["date"] = date;
-  ctx["time"] = fmt_time;
-  ctx["ip"]["__extn"]["fn"] = "ip";
-  ctx["ip"]["__extn"]["arg"] = client_ip;
-  Json::StreamWriterBuilder wb;
-  wb["indentation"] = "";
-  std::string ctx_json = Json::writeString(wb, ctx);
+  std::string action;
+  action.reserve(action_prefix.size() + privilege.size() + 1);
+  action.append(action_prefix);
+  action.append(privilege.data(), privilege.size());
+  action.push_back('"');
 
   CedarDecision decision;
   {
@@ -436,16 +446,16 @@ static int check_single_privilege_embedded(
 
     if (embedded_cedar_collect_stats) {
       auto t0 = std::chrono::high_resolution_clock::now();
-      decision = cedar_engine_is_authorized(g_cedar_engine,
-                                            principal.c_str(), action.c_str(),
-                                            resource.c_str(), ctx_json.c_str());
+      decision = cedar_engine_is_authorized_no_diagnostics(
+          g_cedar_engine, principal.c_str(), action.c_str(), resource.c_str(),
+          context_json.c_str());
       auto t1 = std::chrono::high_resolution_clock::now();
       get_thread_stats().eval_time_us +=
           std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
     } else {
-      decision = cedar_engine_is_authorized(g_cedar_engine,
-                                            principal.c_str(), action.c_str(),
-                                            resource.c_str(), ctx_json.c_str());
+      decision = cedar_engine_is_authorized_no_diagnostics(
+          g_cedar_engine, principal.c_str(), action.c_str(), resource.c_str(),
+          context_json.c_str());
     }
     mysql_rwlock_unlock(&LOCK_cedar_engine);
   }
@@ -454,19 +464,22 @@ static int check_single_privilege_embedded(
     if (embedded_cedar_collect_stats) get_thread_stats().errors++;
     if (plugin_handle)
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "embedded_cedar: evaluation error for %s",
-                            privilege.c_str());
+                            "embedded_cedar: evaluation error for %.*s",
+                            static_cast<int>(privilege.size()),
+                            privilege.data());
     return -1;
   }
 
   int result = (decision == Allow) ? 1 : 0;
 
   if (embedded_cedar_cache_enabled) {
-    AuthCacheKey key{user_uid, resource_id, privilege, day, date, client_ip};
     std::time_t now = std::time(nullptr);
     AuthCacheEntry entry{result, now + embedded_cedar_cache_ttl, {}};
-    int max_per_shard = embedded_cedar_cache_size / static_cast<int>(kNumShards);
-    g_cache.put(key, entry, max_per_shard);
+    int max_per_shard =
+        std::max(1, embedded_cedar_cache_size / static_cast<int>(kNumShards));
+    int evictions = g_cache.put(std::move(key), entry, max_per_shard);
+    if (embedded_cedar_collect_stats && evictions > 0)
+      get_thread_stats().cache_evictions += evictions;
   }
 
   return result;
@@ -476,11 +489,22 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
   if (!plugin_initialized) return -1;
 
   std::string user_uid = auth_common::auth_build_user_uid(event);
-  std::string ns = embedded_cedar_namespace ? embedded_cedar_namespace : "MySQL";
+  std::string_view ns =
+      embedded_cedar_namespace ? embedded_cedar_namespace : "MySQL";
   std::string resource_id = auth_common::auth_create_resource_identifier(event, "");
 
   auto time_ctx = auth_common::auth_get_time_context();
-  std::string ip = auth_common::auth_get_client_ip_cached(event->thd);
+  const std::string &ip = auth_common::auth_get_client_ip_cached_ref(event->thd);
+  std::string prefix;
+  if (!ns.empty()) {
+    prefix.reserve(ns.size() + 2);
+    prefix.append(ns.data(), ns.size());
+    prefix.append("::");
+  }
+  std::string principal = build_prefixed_uid(prefix, "User", user_uid);
+  std::string resource = prefix + resource_id;
+  std::string action_prefix = prefix + "Action::\"";
+  std::string context_json = auth_common::auth_build_context_json(time_ctx, ip);
 
   static const std::pair<const char *, int> kStdPrivs[] = {
       {"SELECT", 0}, {"INSERT", 1}, {"UPDATE", 2}, {"DELETE", 3},
@@ -495,38 +519,47 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
       {"TRIGGER", 27}, {"CREATE TABLESPACE", 28},
       {"CREATE ROLE", 29}, {"DROP ROLE", 30}};
 
-  std::vector<std::pair<std::string, int>> privs_to_check;
-  for (const auto &p : kStdPrivs) {
-    if (event->privileges & (1UL << p.second))
-      privs_to_check.push_back({p.first, p.second});
-  }
-  for (const auto &[priv, offset] : privs::global_acls_map) {
-    if (!(event->privileges & (1UL << offset))) continue;
-    bool dup = false;
-    for (const auto &e : privs_to_check) {
-      if (e.second == offset) { dup = true; break; }
-    }
-    if (!dup) privs_to_check.push_back({priv, offset});
-  }
-
   bool is_any_of = (event->requirement_mode ==
                     mysql_authorization_event::MYSQL_AUTHZ_REQ_ANY_OF);
   bool authorized = !is_any_of;
   bool any_checked = false;
+  unsigned long seen_offsets = 0;
 
-  for (const auto &p : privs_to_check) {
+  auto evaluate_privilege = [&](std::string_view privilege) {
     any_checked = true;
-    int r = check_single_privilege_embedded(
-        user_uid, resource_id, p.first,
-        time_ctx.day, time_ctx.date, time_ctx.time, ip, ns);
+    int r = check_single_privilege_embedded(user_uid, resource_id, privilege,
+                                            principal, resource, action_prefix,
+                                            context_json, time_ctx.day,
+                                            time_ctx.date, ip);
 
     if (r == -1) return -1;
 
     if (is_any_of) {
-      if (r == 1) { authorized = true; break; }
-    } else {
-      if (r == 0) { authorized = false; break; }
+      if (r == 1) {
+        authorized = true;
+        return 1;
+      }
+    } else if (r == 0) {
+      authorized = false;
+      return 1;
     }
+
+    return 0;
+  };
+
+  for (const auto &p : kStdPrivs) {
+    unsigned long bit = (1UL << p.second);
+    if (!(event->privileges & bit)) continue;
+    seen_offsets |= bit;
+    int loop_result = evaluate_privilege(p.first);
+    if (loop_result != 0) return (loop_result < 0) ? -1 : (authorized ? 1 : 0);
+  }
+
+  for (const auto &[priv, offset] : privs::global_acls_map) {
+    unsigned long bit = (1UL << offset);
+    if (!(event->privileges & bit) || (seen_offsets & bit)) continue;
+    int loop_result = evaluate_privilege(priv);
+    if (loop_result != 0) return (loop_result < 0) ? -1 : (authorized ? 1 : 0);
   }
 
   if (!any_checked) return 1;

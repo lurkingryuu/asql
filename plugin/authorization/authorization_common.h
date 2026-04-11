@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <string_view>
 #include <cstdint>
 #include <string>
 
@@ -67,6 +68,10 @@ struct AuthTimeContext {
 // Get all time values with single syscall
 AuthTimeContext auth_get_time_context();
 
+// Build the fixed-shape Cedar context JSON string.
+std::string auth_build_context_json(const AuthTimeContext &ctx,
+                                    std::string_view client_ip);
+
 std::string auth_get_client_ip(THD *thd);
 
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
@@ -77,6 +82,7 @@ void auth_reset_client_ip_raw_calls_for_test();
 
 // Cached client IP lookup (once per THD)
 std::string auth_get_client_ip_cached(THD *thd);
+const std::string &auth_get_client_ip_cached_ref(THD *thd);
 
 // Clear cached IP for a THD (call when THD is recycled)
 void auth_clear_client_ip_cache(THD *thd);
