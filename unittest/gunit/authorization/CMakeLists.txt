@@ -35,7 +35,7 @@ if(JSONCPP_FOUND)
 else()
   target_include_directories(embedded-cedar-t PRIVATE /usr/include/jsoncpp)
 endif()
-target_link_libraries(embedded-cedar-t PRIVATE PkgConfig::LIBCEDAR)
+target_link_libraries(embedded-cedar-t PkgConfig::LIBCEDAR)
 
 if(JSONCPP_FOUND)
   target_link_libraries(embedded-cedar-t ${JSONCPP_LIBRARIES})
