@@ -44,6 +44,24 @@ MEMORY_LIMIT="${MEMORY_LIMIT:-}"
 BUILDER_NETWORK_MODE="${BUILDER_NETWORK_MODE:-host}"
 BUILD_NETWORK_MODE="${BUILD_NETWORK_MODE:-host}"
 
+resolve_latest_libcedar_version() {
+    local latest_release_url resolved_url release_tag
+    latest_release_url="https://github.com/lurkingryuu/libcedar/releases/latest"
+    resolved_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${latest_release_url}")"
+    release_tag="${resolved_url##*/}"
+
+    if [ -z "${release_tag}" ] || [ "${release_tag}" = "latest" ]; then
+        echo "Failed to resolve the latest libcedar release from GitHub" >&2
+        return 1
+    fi
+
+    printf '%s\n' "${release_tag}"
+}
+
+if [ -z "${LIBCEDAR_VERSION:-}" ]; then
+    LIBCEDAR_VERSION="$(resolve_latest_libcedar_version)"
+fi
+
 # Cross-platform function to get number of CPUs
 get_cpu_count() {
     if command -v nproc >/dev/null 2>&1; then
@@ -109,6 +127,7 @@ echo "  Parallel Jobs: ${PARALLEL_JOBS} (out of ${TOTAL_CPUS} available CPUs)"
 echo "Networking:"
 echo "  Builder Network: ${BUILDER_NETWORK_MODE}"
 echo "  Build Network: ${BUILD_NETWORK_MODE}"
+echo "libcedar release: ${LIBCEDAR_VERSION}"
 echo "=========================================="
 echo ""
 
@@ -193,6 +212,7 @@ BUILD_ARGS=""
 if [ -n "${PARALLEL_JOBS}" ]; then
     BUILD_ARGS="--build-arg PARALLEL_JOBS=${PARALLEL_JOBS}"
 fi
+BUILD_ARGS="${BUILD_ARGS} --build-arg LIBCEDAR_VERSION=${LIBCEDAR_VERSION}"
 
 docker buildx build \
     --network ${BUILD_NETWORK_MODE} \

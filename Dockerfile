@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-ARG LIBCEDAR_VERSION=v0.1.0
+ARG LIBCEDAR_VERSION
 ARG LIBCEDAR_PKG_BASE_URL=https://github.com/lurkingryuu/libcedar/releases/download
 ARG LIBCEDAR_PREFIX=/opt/libcedar
 # TARGETARCH is a Docker predefined platform arg (set by BuildKit / --platform).
@@ -40,13 +40,14 @@ ARG TARGETARCH
 
 # ---- Install packaged libcedar SDK -----------------------------------------
 RUN set -eux; \
+    libcedar_version="${LIBCEDAR_VERSION:?LIBCEDAR_VERSION build arg must be set}"; \
     case "${TARGETARCH}" in \
       amd64) libcedar_target="x86_64-unknown-linux-gnu" ;; \
       arm64) libcedar_target="aarch64-unknown-linux-gnu" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/libcedar.tar.gz \
-      "${LIBCEDAR_PKG_BASE_URL}/${LIBCEDAR_VERSION}/libcedar-${LIBCEDAR_VERSION#v}-${libcedar_target}.tar.gz"; \
+      "${LIBCEDAR_PKG_BASE_URL}/${libcedar_version}/libcedar-${libcedar_version#v}-${libcedar_target}.tar.gz"; \
     mkdir -p "${LIBCEDAR_PREFIX}"; \
     tar -xzf /tmp/libcedar.tar.gz -C "${LIBCEDAR_PREFIX}"; \
     rm -f /tmp/libcedar.tar.gz; \
