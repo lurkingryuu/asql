@@ -167,6 +167,7 @@ static bool g_auth_stats_key_initialized = false;
 static mysql_mutex_t LOCK_stats_registry;
 static std::vector<AuthStats*> g_stats_registry;
 static bool g_stats_registry_initialized = false;
+static bool g_stats_registry_mutex_initialized = false;
 static std::atomic<uint64_t> g_stats_registry_epoch{0};
 
 static void unregister_stats(AuthStats *stats) {
@@ -200,6 +201,25 @@ static void reset_stats_struct(AuthStats *stats) {
   stats->cache_evictions = 0;
   stats->total_time_us = 0;
   stats->remote_time_us = 0;
+}
+
+static void reset_registered_stats(bool clear_registry) {
+  if (!g_stats_registry_mutex_initialized) {
+    reset_stats_struct(t_auth_stats_ptr);
+    if (clear_registry) g_stats_registry.clear();
+    return;
+  }
+
+  bool saw_current = false;
+  mysql_mutex_lock(&LOCK_stats_registry);
+  for (AuthStats *stats : g_stats_registry) {
+    reset_stats_struct(stats);
+    if (stats == t_auth_stats_ptr) saw_current = true;
+  }
+  if (clear_registry) g_stats_registry.clear();
+  mysql_mutex_unlock(&LOCK_stats_registry);
+
+  if (t_auth_stats_ptr && !saw_current) reset_stats_struct(t_auth_stats_ptr);
 }
 
 // Register current thread's stats (called on first use)
@@ -1193,26 +1213,28 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
     return 1;
   }
 
-   // Initialize sharded cache
-   g_sharded_auth_cache.init();
+  // Initialize sharded cache
+  g_sharded_auth_cache.init();
 
-   // Initialize stats registry
-   mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
-   g_stats_registry_initialized = true;
-   g_stats_registry_epoch.fetch_add(1, std::memory_order_acq_rel);
+  if (!g_stats_registry_mutex_initialized) {
+    mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
+    g_stats_registry_mutex_initialized = true;
+  }
+  reset_registered_stats(true);
+  g_stats_registry_initialized = true;
+  g_stats_registry_epoch.fetch_add(1, std::memory_order_acq_rel);
 
-   if (!g_auth_stats_key_initialized) {
-     if (pthread_key_create(&g_auth_stats_key, auth_stats_tls_destructor) == 0) {
-       g_auth_stats_key_initialized = true;
-     } else {
-       if (plugin_handle) {
-         my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                               "Failed to create pthread TLS key for auth stats; stats may leak");
-       }
-     }
-   }
+  if (!g_auth_stats_key_initialized) {
+    if (pthread_key_create(&g_auth_stats_key, auth_stats_tls_destructor) == 0) {
+      g_auth_stats_key_initialized = true;
+    } else if (plugin_handle) {
+      my_plugin_log_message(
+          &plugin_handle, MY_WARNING_LEVEL,
+          "Failed to create pthread TLS key for auth stats; stats may leak");
+    }
+  }
 
-   plugin_initialized = true;
+  plugin_initialized = true;
 
   if (cedar_should_log_info()) {
     my_plugin_log_message(
@@ -1234,31 +1256,23 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
         "Cedar authorization plugin deinitialization starting...");
   }
 
-   plugin_initialized = false;
-   curl_global_cleanup();
+  plugin_initialized = false;
 
-   // Destroy sharded cache
-   g_sharded_auth_cache.destroy();
+  // Cleanup thread-local handles before tearing down libcurl state.
+  CurlHandlePool::cleanup_thread();
+  curl_global_cleanup();
 
-   // Cleanup stats registry
-#ifdef EXTRA_CODE_FOR_UNIT_TESTING
-   // For unit tests, don't clear the registry to preserve thread registration.
-   // Just reset the stats values.
-   for (AuthStats* stats : g_stats_registry) {
-     reset_stats_struct(stats);
-   }
-   reset_stats_struct(t_auth_stats_ptr);
-  // Don't set g_stats_registry_initialized = false;
-  // Don't clear g_stats_registry;
-  // Don't destroy the mutex;
-#else
-   // Mark aggregation disabled. Do NOT clear/destroy registry here: TLS
-   // destructors may run during thread shutdown and need to unregister safely.
-   g_stats_registry_initialized = false;
-#endif
+  // Destroy sharded cache
+  g_sharded_auth_cache.destroy();
 
-   // Clear thread-local IP cache
-   auth_common::auth_clear_all_client_ip_cache();
+  // Leave the mutex alive for TLS destructors, but reset/clear the registry so
+  // the next init cycle starts from a clean state.
+  reset_registered_stats(true);
+  g_stats_registry_initialized = false;
+  t_stats_registry_epoch_seen = 0;
+
+  // Clear thread-local IP cache
+  auth_common::auth_clear_all_client_ip_cache();
 
   if (cedar_should_log_info()) {
     my_plugin_log_message(
@@ -1566,14 +1580,7 @@ int64_t cedar_get_auth_stat_denies() {
                           : aggregate_stat(&AuthStats::denies);
 }
 void cedar_reset_stats_for_test() {
-  bool saw_current = false;
-  mysql_mutex_lock(&LOCK_stats_registry);
-  for (AuthStats* stats : g_stats_registry) {
-    reset_stats_struct(stats);
-    if (stats == t_auth_stats_ptr) saw_current = true;
-  }
-  mysql_mutex_unlock(&LOCK_stats_registry);
-  if (t_auth_stats_ptr && !saw_current) reset_stats_struct(t_auth_stats_ptr);
+  reset_registered_stats(false);
 }
 void cedar_set_collect_stats(bool enable) {
   cedar_authorization_collect_stats = enable;

@@ -112,6 +112,7 @@ static bool g_stats_key_initialized = false;
 static mysql_mutex_t LOCK_stats_registry;
 static std::vector<EmbeddedAuthStats*> g_stats_registry;
 static bool g_stats_registry_initialized = false;
+static bool g_stats_registry_mutex_initialized = false;
 static std::atomic<uint64_t> g_stats_registry_epoch{0};
 
 static void unregister_stats(EmbeddedAuthStats *stats) {
@@ -141,6 +142,25 @@ static void reset_stats_struct(EmbeddedAuthStats *stats) {
   stats->cache_evictions = 0;
   stats->total_time_us = 0;
   stats->eval_time_us = 0;
+}
+
+static void reset_registered_stats(bool clear_registry) {
+  if (!g_stats_registry_mutex_initialized) {
+    reset_stats_struct(t_stats_ptr);
+    if (clear_registry) g_stats_registry.clear();
+    return;
+  }
+
+  bool saw_current = false;
+  mysql_mutex_lock(&LOCK_stats_registry);
+  for (EmbeddedAuthStats *stats : g_stats_registry) {
+    reset_stats_struct(stats);
+    if (stats == t_stats_ptr) saw_current = true;
+  }
+  if (clear_registry) g_stats_registry.clear();
+  mysql_mutex_unlock(&LOCK_stats_registry);
+
+  if (t_stats_ptr && !saw_current) reset_stats_struct(t_stats_ptr);
 }
 
 static EmbeddedAuthStats& get_thread_stats() {
@@ -390,9 +410,11 @@ static bool create_engine_from_files() {
     if (cedar_engine_set_schema_json(engine, schema_json.c_str()) != 0) {
       const char *err = cedar_engine_last_error(engine);
       if (plugin_handle)
-        my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+        my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
                               "embedded_cedar: failed to load schema: %s",
                               err ? err : "(unknown)");
+      cedar_engine_free(engine);
+      return false;
     } else if (should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "embedded_cedar: schema loaded from %s",
@@ -404,9 +426,11 @@ static bool create_engine_from_files() {
     if (cedar_engine_set_entities_json(engine, entities_json.c_str()) != 0) {
       const char *err = cedar_engine_last_error(engine);
       if (plugin_handle)
-        my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+        my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
                               "embedded_cedar: failed to load entities: %s",
                               err ? err : "(unknown)");
+      cedar_engine_free(engine);
+      return false;
     } else if (should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "embedded_cedar: entities loaded from %s",
@@ -428,6 +452,17 @@ static bool create_engine_from_files() {
                             "embedded_cedar: policies loaded from %s",
                             embedded_cedar_policy_file);
     }
+  }
+
+  if (cedar_engine_validate(engine) != 0) {
+    const char *err = cedar_engine_last_error(engine);
+    if (plugin_handle) {
+      my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
+                            "embedded_cedar: schema validation failed: %s",
+                            err ? err : "(unknown)");
+    }
+    cedar_engine_free(engine);
+    return false;
   }
 
   CedarEngine *old_engine = g_cedar_engine;
@@ -526,11 +561,12 @@ static int check_single_privilege_embedded(
 
   if (decision == Error) {
     if (embedded_cedar_collect_stats) get_thread_stats().errors++;
+    const char *err = cedar_engine_last_error(g_cedar_engine);
     if (plugin_handle)
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "embedded_cedar: evaluation error for %.*s",
+                            "embedded_cedar: evaluation error for %.*s: %s",
                             static_cast<int>(privilege.size()),
-                            privilege.data());
+                            privilege.data(), err ? err : "(unknown)");
     return -1;
   }
 
@@ -730,7 +766,11 @@ int embedded_cedar_init(MYSQL_PLUGIN plugin_info) {
 
   g_cache.init();
 
-  mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
+  if (!g_stats_registry_mutex_initialized) {
+    mysql_mutex_init(0, &LOCK_stats_registry, MY_MUTEX_INIT_FAST);
+    g_stats_registry_mutex_initialized = true;
+  }
+  reset_registered_stats(true);
   g_stats_registry_initialized = true;
   g_stats_registry_epoch.fetch_add(1, std::memory_order_acq_rel);
 
@@ -767,7 +807,9 @@ int embedded_cedar_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
 
   g_cache.destroy();
 
+  reset_registered_stats(true);
   g_stats_registry_initialized = false;
+  t_stats_registry_epoch_seen = 0;
   auth_common::auth_clear_all_client_ip_cache();
 
   plugin_handle = nullptr;
@@ -949,19 +991,7 @@ void embedded_cedar_cache_flush_for_test() {
 }
 
 void embedded_cedar_reset_stats_for_test() {
-  if (!g_stats_registry_initialized) {
-    reset_stats_struct(t_stats_ptr);
-    embedded_cedar_reset_stats = false;
-    return;
-  }
-  bool saw_current = false;
-  mysql_mutex_lock(&LOCK_stats_registry);
-  for (EmbeddedAuthStats *s : g_stats_registry) {
-    reset_stats_struct(s);
-    if (s == t_stats_ptr) saw_current = true;
-  }
-  mysql_mutex_unlock(&LOCK_stats_registry);
-  if (t_stats_ptr && !saw_current) reset_stats_struct(t_stats_ptr);
+  reset_registered_stats(false);
   embedded_cedar_reset_stats = false;
 }
 

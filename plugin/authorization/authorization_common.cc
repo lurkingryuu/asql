@@ -124,8 +124,10 @@ std::string auth_create_resource_identifier(
     }
     case MYSQL_AUTHORIZATION_ROUTINE_ACCESS: {
       std::string db = auth_make_db_id(event);
-      std::string routine = event->routine.str ? std::string(event->routine.str)
-                                               : std::string("unknown");
+      std::string routine =
+          (event && event->routine.str)
+              ? std::string(event->routine.str, event->routine.length)
+              : std::string("unknown");
       if (!db.empty()) routine = db + "." + routine;
       resource = prefix + "Routine::\"" + routine + "\"";
       break;
