@@ -105,6 +105,7 @@ struct EmbeddedAuthStats {
 
 static thread_local EmbeddedAuthStats *t_stats_ptr = nullptr;
 static thread_local uint64_t t_stats_registry_epoch_seen = 0;
+static thread_local std::string t_last_request_error;
 
 static pthread_key_t g_stats_key;
 static bool g_stats_key_initialized = false;
@@ -495,8 +496,9 @@ static inline CedarDecision authorize_embedded_request(CedarEngine *engine,
                                                        const char *context_json) {
 #if defined(__GNUC__)
   if (cedar_engine_is_authorized_no_diagnostics != nullptr) {
-    return cedar_engine_is_authorized_no_diagnostics(engine, principal, action,
-                                                     resource, context_json);
+    CedarDecision decision = cedar_engine_is_authorized_no_diagnostics(
+        engine, principal, action, resource, context_json);
+    if (decision != Error) return decision;
   }
 #endif
   return cedar_engine_is_authorized(engine, principal, action, resource,
@@ -533,10 +535,12 @@ static int check_single_privilege_embedded(
   action.push_back('"');
 
   CedarDecision decision;
+  std::string engine_error;
   {
     mysql_rwlock_rdlock(&LOCK_cedar_engine);
     if (!g_cedar_engine) {
       mysql_rwlock_unlock(&LOCK_cedar_engine);
+      t_last_request_error = "embedded_cedar: engine not loaded";
       if (plugin_handle)
         my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                               "embedded_cedar: engine not loaded; returning IGNORE");
@@ -556,12 +560,17 @@ static int check_single_privilege_embedded(
                                             action.c_str(), resource.c_str(),
                                             context_json.c_str());
     }
+    if (decision == Error) {
+      const char *err = cedar_engine_last_error(g_cedar_engine);
+      if (err != nullptr) engine_error.assign(err);
+    }
     mysql_rwlock_unlock(&LOCK_cedar_engine);
   }
 
   if (decision == Error) {
     if (embedded_cedar_collect_stats) get_thread_stats().errors++;
-    const char *err = cedar_engine_last_error(g_cedar_engine);
+    const char *err = engine_error.empty() ? nullptr : engine_error.c_str();
+    t_last_request_error = err ? err : "embedded_cedar: evaluation returned Error";
     if (plugin_handle)
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                             "embedded_cedar: evaluation error for %.*s: %s",
@@ -668,6 +677,7 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
 
 mysql_authorization_result_t embedded_cedar_check(
     const mysql_authorization_event *event) {
+  t_last_request_error.clear();
   if (embedded_cedar_collect_stats) get_thread_stats().requests++;
 
   if (!plugin_initialized || !embedded_cedar_enabled)
@@ -1031,41 +1041,35 @@ bool embedded_cedar_cache_contains_for_test(const char *user,
 }
 
 int64_t embedded_cedar_get_auth_stat_requests() {
-  return t_stats_ptr ? t_stats_ptr->requests
-                     : aggregate_stat(&EmbeddedAuthStats::requests);
+  return aggregate_stat(&EmbeddedAuthStats::requests);
 }
 
 int64_t embedded_cedar_get_auth_stat_grants() {
-  return t_stats_ptr ? t_stats_ptr->grants
-                     : aggregate_stat(&EmbeddedAuthStats::grants);
+  return aggregate_stat(&EmbeddedAuthStats::grants);
 }
 
 int64_t embedded_cedar_get_auth_stat_denies() {
-  return t_stats_ptr ? t_stats_ptr->denies
-                     : aggregate_stat(&EmbeddedAuthStats::denies);
+  return aggregate_stat(&EmbeddedAuthStats::denies);
 }
 
 int64_t embedded_cedar_get_auth_stat_errors() {
-  return t_stats_ptr ? t_stats_ptr->errors
-                     : aggregate_stat(&EmbeddedAuthStats::errors);
+  return aggregate_stat(&EmbeddedAuthStats::errors);
 }
 
 int64_t embedded_cedar_get_auth_stat_cache_hits() {
-  return t_stats_ptr ? t_stats_ptr->cache_hits
-                     : aggregate_stat(&EmbeddedAuthStats::cache_hits);
+  return aggregate_stat(&EmbeddedAuthStats::cache_hits);
 }
 
 int64_t embedded_cedar_get_auth_stat_cache_misses() {
-  return t_stats_ptr ? t_stats_ptr->cache_misses
-                     : aggregate_stat(&EmbeddedAuthStats::cache_misses);
+  return aggregate_stat(&EmbeddedAuthStats::cache_misses);
 }
 
 int64_t embedded_cedar_get_auth_stat_cache_evictions() {
-  return t_stats_ptr ? t_stats_ptr->cache_evictions
-                     : aggregate_stat(&EmbeddedAuthStats::cache_evictions);
+  return aggregate_stat(&EmbeddedAuthStats::cache_evictions);
 }
 
 const char *embedded_cedar_last_error_for_test() {
+  if (!t_last_request_error.empty()) return t_last_request_error.c_str();
   return g_cedar_engine ? cedar_engine_last_error(g_cedar_engine) : nullptr;
 }
 #endif

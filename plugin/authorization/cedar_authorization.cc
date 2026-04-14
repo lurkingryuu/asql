@@ -320,6 +320,24 @@ static bool cedar_authorization_log_info = false;
 // column-level Cedar policies are required.
 static bool cedar_authorization_enable_column_access = false;
 
+static void reset_unit_test_runtime_config() {
+  if (cedar_authorization_url) {
+    free(cedar_authorization_url);
+    cedar_authorization_url = nullptr;
+  }
+  cedar_authorization_timeout = 5000;
+  cedar_authorization_ssl_verify_peer = false;
+  cedar_authorization_ssl_verify_host = false;
+  cedar_authorization_cache_enabled = true;
+  cedar_authorization_cache_size = 1024;
+  cedar_authorization_cache_ttl = 300;
+  cedar_authorization_cache_flush = false;
+  cedar_authorization_collect_stats = true;
+  cedar_authorization_reset_stats = false;
+  cedar_authorization_log_info = false;
+  cedar_authorization_enable_column_access = false;
+}
+
 // Cache implementation
 #include <list>
 #include <mutex>
@@ -1198,6 +1216,10 @@ int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
   // Save plugin handle for logging first
   plugin_handle = plugin_info;
 
+  if (plugin_info == nullptr) {
+    reset_unit_test_runtime_config();
+  }
+
   if (cedar_should_log_info()) {
     my_plugin_log_message(
         &plugin_handle, MY_INFORMATION_LEVEL,
@@ -1568,16 +1590,13 @@ bool cedar_cache_contains_for_test(const char *user, const char *resource,
 
 // Stats testing helpers
 int64_t cedar_get_auth_stat_requests() {
-  return t_auth_stats_ptr ? t_auth_stats_ptr->requests
-                          : aggregate_stat(&AuthStats::requests);
+  return aggregate_stat(&AuthStats::requests);
 }
 int64_t cedar_get_auth_stat_grants() {
-  return t_auth_stats_ptr ? t_auth_stats_ptr->grants
-                          : aggregate_stat(&AuthStats::grants);
+  return aggregate_stat(&AuthStats::grants);
 }
 int64_t cedar_get_auth_stat_denies() {
-  return t_auth_stats_ptr ? t_auth_stats_ptr->denies
-                          : aggregate_stat(&AuthStats::denies);
+  return aggregate_stat(&AuthStats::denies);
 }
 void cedar_reset_stats_for_test() {
   reset_registered_stats(false);

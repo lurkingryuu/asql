@@ -20,14 +20,12 @@ GET_FILENAME_COMPONENT(_selfdir_CheckFileOffsetBits
 MACRO (CHECK_FILE_OFFSET_BITS)
   IF(NOT DEFINED _FILE_OFFSET_BITS)
     MESSAGE(STATUS "Cheking _FILE_OFFSET_BITS for large files")
-    TRY_COMPILE(__WITHOUT_FILE_OFFSET_BITS_64
-      ${CMAKE_CURRENT_BINARY_DIR}
-      ${_selfdir_CheckFileOffsetBits}/CheckFileOffsetBits.c
+    try_compile(__WITHOUT_FILE_OFFSET_BITS_64
+      SOURCES ${_selfdir_CheckFileOffsetBits}/CheckFileOffsetBits.c
       COMPILE_DEFINITIONS ${CMAKE_REQUIRED_DEFINITIONS})
     IF(NOT __WITHOUT_FILE_OFFSET_BITS_64)
-      TRY_COMPILE(__WITH_FILE_OFFSET_BITS_64
-        ${CMAKE_CURRENT_BINARY_DIR}
-        ${_selfdir_CheckFileOffsetBits}/CheckFileOffsetBits.c
+      try_compile(__WITH_FILE_OFFSET_BITS_64
+        SOURCES ${_selfdir_CheckFileOffsetBits}/CheckFileOffsetBits.c
         COMPILE_DEFINITIONS ${CMAKE_REQUIRED_DEFINITIONS} -D_FILE_OFFSET_BITS=64)
     ENDIF(NOT __WITHOUT_FILE_OFFSET_BITS_64)
 

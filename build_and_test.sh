@@ -793,4 +793,15 @@ mysql -u root --skip-password --socket="$MYSQL_SOCKET" -e "SELECT VERSION();" ||
 print_success "MySQL Build and Test Successful!"
 print_success "MySQL Server is Running!"
 
+if [ "$NO_TEST" -eq 0 ]; then
+    print_info "=== RUNNING UNIT TESTS (CTest) ==="
+    if ! ctest --test-dir "$MYSQL_BUILD_DIR" --output-on-failure; then
+        print_error "CTest failed"
+        exit 1
+    fi
+    print_success "CTest completed successfully!"
+else
+    print_warning "Skipping CTest (--no-test specified)"
+fi
+
 

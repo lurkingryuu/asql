@@ -40,12 +40,9 @@ MYSQL_ADD_PLUGIN(external_authorization
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(JSONCPP jsoncpp)
-  pkg_check_modules(LIBCEDAR REQUIRED IMPORTED_TARGET GLOBAL libcedar)
-else()
-  message(FATAL_ERROR
-    "embedded_cedar requires pkg-config and an installed libcedar package. "
-    "Set PKG_CONFIG_PATH if libcedar is installed in a non-default prefix.")
 endif()
+
+include("${CMAKE_SOURCE_DIR}/cmake/libcedar.cmake")
 
 # Link against curl and jsoncpp; add include dirs for jsoncpp
 if(JSONCPP_FOUND)
@@ -81,13 +78,15 @@ MYSQL_ADD_PLUGIN(embedded_cedar
   MODULE_ONLY
   MODULE_OUTPUT_NAME "embedded_cedar")
 
+add_dependencies(embedded_cedar libcedar_rust)
+
 if(JSONCPP_FOUND)
   target_include_directories(embedded_cedar PRIVATE ${JSONCPP_INCLUDE_DIRS})
 else()
   target_include_directories(embedded_cedar PRIVATE /usr/include/jsoncpp)
 endif()
 
-target_link_libraries(embedded_cedar PkgConfig::LIBCEDAR)
+target_link_libraries(embedded_cedar libcedar::libcedar)
 
 if(JSONCPP_FOUND)
   target_link_libraries(embedded_cedar ${JSONCPP_LIBRARIES})

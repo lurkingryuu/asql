@@ -2,6 +2,8 @@
 
 ADD_DEFINITIONS(-DEXTRA_CODE_FOR_UNIT_TESTING)
 
+include("${CMAKE_SOURCE_DIR}/cmake/libcedar.cmake")
+
 MYSQL_ADD_EXECUTABLE(authorization-t
   authorization-t.cc
   ${CMAKE_SOURCE_DIR}/plugin/authorization/authorization_common.cc
@@ -30,12 +32,14 @@ MYSQL_ADD_EXECUTABLE(embedded-cedar-t
     gunit_large server_unittest_library
 )
 
+add_dependencies(embedded-cedar-t libcedar_rust)
+
 if(JSONCPP_FOUND)
   target_include_directories(embedded-cedar-t PRIVATE ${JSONCPP_INCLUDE_DIRS})
 else()
   target_include_directories(embedded-cedar-t PRIVATE /usr/include/jsoncpp)
 endif()
-target_link_libraries(embedded-cedar-t PkgConfig::LIBCEDAR)
+target_link_libraries(embedded-cedar-t libcedar::libcedar)
 
 if(JSONCPP_FOUND)
   target_link_libraries(embedded-cedar-t ${JSONCPP_LIBRARIES})

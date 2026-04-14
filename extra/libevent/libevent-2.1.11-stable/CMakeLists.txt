@@ -982,6 +982,8 @@ source_group("Source Extra"     FILES ${SRC_EXTRA})
 # Generate the configure headers.
 # (Place them in the build dir so we don't polute the source tree with generated files).
 include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/include)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include/event2)
 
 if (${GNUC})
     set(EVENT_SHARED_FLAGS -fvisibility=hidden)
