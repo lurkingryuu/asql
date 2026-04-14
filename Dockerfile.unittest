@@ -120,7 +120,7 @@ WORKDIR /mysql-build
 
 # Configure for unittests
 # Use RelWithDebInfo to reduce build artifacts size (Debug is too huge for some Docker environments)
-RUN cmake /mysql-source \
+RUN cmake -S /mysql-source -B /mysql-build \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_PREFIX=/usr/local/mysql \
     -DDOWNLOAD_BOOST=0 \

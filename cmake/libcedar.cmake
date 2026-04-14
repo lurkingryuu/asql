@@ -1,15 +1,48 @@
-# Fetch and build libcedar (Rust -> staticlib) for in-tree consumers.
-#
-# This intentionally builds from source so the resulting archive matches the
-# host toolchain/glibc, unlike manylinux-style prebuilt tarballs.
-
-include(FetchContent)
+# Prefer an installed libcedar SDK when available, and only fall back to a
+# local Rust build when no packaged copy can be discovered.
 
 set(LIBCEDAR_VERSION "v0.1.1" CACHE STRING "libcedar git tag")
 
 if(TARGET libcedar::libcedar)
   return()
 endif()
+
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(LIBCEDAR QUIET IMPORTED_TARGET GLOBAL libcedar)
+endif()
+
+if(TARGET PkgConfig::LIBCEDAR)
+  message(STATUS "Using packaged libcedar from pkg-config")
+
+  add_custom_target(libcedar_rust)
+
+  add_library(libcedar::libcedar INTERFACE IMPORTED GLOBAL)
+  set_target_properties(libcedar::libcedar PROPERTIES
+    INTERFACE_LINK_LIBRARIES PkgConfig::LIBCEDAR)
+  return()
+endif()
+
+find_path(LIBCEDAR_INCLUDE_DIR
+  NAMES libcedar.h
+  PATH_SUFFIXES include)
+find_library(LIBCEDAR_LIBRARY
+  NAMES cedar
+  PATH_SUFFIXES lib lib64)
+
+if(LIBCEDAR_INCLUDE_DIR AND LIBCEDAR_LIBRARY)
+  message(STATUS "Using packaged libcedar from ${LIBCEDAR_LIBRARY}")
+
+  add_custom_target(libcedar_rust)
+
+  add_library(libcedar::libcedar UNKNOWN IMPORTED GLOBAL)
+  set_target_properties(libcedar::libcedar PROPERTIES
+    IMPORTED_LOCATION "${LIBCEDAR_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${LIBCEDAR_INCLUDE_DIR}")
+  return()
+endif()
+
+include(FetchContent)
 
 find_program(LIBCEDAR_CARGO_EXECUTABLE cargo REQUIRED)
 

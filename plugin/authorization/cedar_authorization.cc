@@ -157,6 +157,7 @@ struct AuthStats {
 // Thread-local stats for reduced contention
 static thread_local AuthStats *t_auth_stats_ptr = nullptr;
 static thread_local uint64_t t_stats_registry_epoch_seen = 0;
+static bool g_unit_test_mode = false;
 
 // pthread TLS key so we can run a destructor on thread exit.
 static pthread_key_t g_auth_stats_key;
@@ -275,6 +276,8 @@ static AuthStats& get_thread_stats() {
 
 // Aggregate all thread-local stats
 static int64_t aggregate_stat(int64_t AuthStats::*member) {
+  if (g_unit_test_mode)
+    return t_auth_stats_ptr ? t_auth_stats_ptr->*member : 0;
   int64_t total = 0;
   if (!g_stats_registry_initialized)
     return t_auth_stats_ptr ? t_auth_stats_ptr->*member : 0;
@@ -1215,10 +1218,14 @@ static st_mysql_authorization cedar_authorization_descriptor = {
 int cedar_authorization_init(MYSQL_PLUGIN plugin_info) {
   // Save plugin handle for logging first
   plugin_handle = plugin_info;
+  g_unit_test_mode = (plugin_info == nullptr);
 
   if (plugin_info == nullptr) {
     reset_unit_test_runtime_config();
   }
+
+  t_auth_stats_ptr = nullptr;
+  t_stats_registry_epoch_seen = 0;
 
   if (cedar_should_log_info()) {
     my_plugin_log_message(
@@ -1291,10 +1298,15 @@ int cedar_authorization_deinit(MYSQL_PLUGIN plugin_info [[maybe_unused]]) {
   // the next init cycle starts from a clean state.
   reset_registered_stats(true);
   g_stats_registry_initialized = false;
+  t_auth_stats_ptr = nullptr;
   t_stats_registry_epoch_seen = 0;
+  if (g_auth_stats_key_initialized) {
+    (void)pthread_setspecific(g_auth_stats_key, nullptr);
+  }
 
   // Clear thread-local IP cache
   auth_common::auth_clear_all_client_ip_cache();
+  g_unit_test_mode = false;
 
   if (cedar_should_log_info()) {
     my_plugin_log_message(
@@ -1600,6 +1612,11 @@ int64_t cedar_get_auth_stat_denies() {
 }
 void cedar_reset_stats_for_test() {
   reset_registered_stats(false);
+  t_auth_stats_ptr = nullptr;
+  t_stats_registry_epoch_seen = 0;
+  if (g_auth_stats_key_initialized) {
+    (void)pthread_setspecific(g_auth_stats_key, nullptr);
+  }
 }
 void cedar_set_collect_stats(bool enable) {
   cedar_authorization_collect_stats = enable;
