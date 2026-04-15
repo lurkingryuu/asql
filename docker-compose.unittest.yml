@@ -5,6 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile.unittest
       target: unittest-dev
+      network: ${BUILD_NETWORK_MODE:-host}
       args:
         LIBCEDAR_VERSION: ${LIBCEDAR_VERSION:-v0.1.0}
         LIBCEDAR_CACHE_BUST: ${LIBCEDAR_CACHE_BUST:-}

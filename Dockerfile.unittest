@@ -36,18 +36,32 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 FROM toolchain AS boost
 
+ARG BOOST_VERSION=1.77.0
+ARG BOOST_PACKAGE_NAME=boost_1_77_0
+
 RUN mkdir -p /tmp/boost
 
 # Pre-download Boost to avoid timeout issues during cmake.
 RUN --mount=type=cache,target=/var/cache/asql-downloads/boost \
     set -eux; \
-    boost_archive="/var/cache/asql-downloads/boost/boost_1_77_0.tar.bz2"; \
+    boost_archive="/var/cache/asql-downloads/boost/${BOOST_PACKAGE_NAME}.tar.gz"; \
     if [ ! -s "${boost_archive}" ]; then \
-      curl -fsSL -o "${boost_archive}" \
-        https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2; \
+      rm -f "${boost_archive}"; \
+      for boost_url in \
+        "https://github.com/boostorg/boost/releases/download/boost-${BOOST_VERSION}/${BOOST_PACKAGE_NAME}.tar.gz" \
+        "https://archives.boost.io/release/${BOOST_VERSION}/source/${BOOST_PACKAGE_NAME}.tar.gz" \
+        "https://sourceforge.net/projects/boost/files/boost/${BOOST_VERSION}/${BOOST_PACKAGE_NAME}.tar.gz/download"; do \
+        if curl --fail --location --retry 5 --retry-all-errors \
+          --connect-timeout 10 --speed-time 30 --speed-limit 1024 \
+          -o "${boost_archive}" "${boost_url}"; then \
+          break; \
+        fi; \
+        rm -f "${boost_archive}"; \
+      done; \
     fi; \
+    test -s "${boost_archive}"; \
     rm -rf /tmp/boost/*; \
-    tar -xjf "${boost_archive}" -C /tmp/boost --strip-components=1
+    tar -xzf "${boost_archive}" -C /tmp/boost --strip-components=1
 
 FROM toolchain AS libcedar
 
@@ -143,7 +157,7 @@ RUN chmod +x \
 
 WORKDIR /mysql-build
 
-ENTRYPOINT ["/mysql-source/unittest/docker/run-test-suite.sh"]
+ENTRYPOINT ["bash", "/mysql-source/unittest/docker/run-test-suite.sh"]
 CMD ["full"]
 
 FROM builder-base AS builder
@@ -191,7 +205,7 @@ ENV AUTO_BUILD=1
 
 WORKDIR /mysql-build
 
-ENTRYPOINT ["/mysql-source/unittest/docker/run-test-suite.sh"]
+ENTRYPOINT ["bash", "/mysql-source/unittest/docker/run-test-suite.sh"]
 CMD ["full"]
 
 FROM builder AS unittest

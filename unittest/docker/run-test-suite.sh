@@ -290,7 +290,7 @@ start_sync_service() {
 
 run_integrated_embedded() {
   start_sync_service
-  "${SOURCE_DIR}/test_integrated_plugins.sh" \
+  bash "${SOURCE_DIR}/test_integrated_plugins.sh" \
     --mysql-socket "${MYSQL_SOCKET}" \
     --authorization-mode embedded \
     --cedar-url "http://127.0.0.1:${SYNC_SERVICE_PORT}/v1" \
