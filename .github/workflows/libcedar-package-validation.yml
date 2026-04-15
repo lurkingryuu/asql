@@ -32,6 +32,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.unittest
+          target: unittest
           push: false
           load: false
           cache-from: type=gha

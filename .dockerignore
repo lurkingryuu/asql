@@ -17,6 +17,7 @@ CMakeFiles/
 # IDE and editor files
 .vscode/
 .idea/
+.cursor/
 .cproject
 .project
 .settings/
@@ -85,7 +86,9 @@ packaging/**/SOURCES/
 # Docker files (keep docker/ in context)
 # docker/
 Dockerfile
+Dockerfile.unittest
 docker-compose.yml
+docker-compose.unittest.yml
 build-and-push.sh
 DOCKER_BUILD.md
 DOCKER-QUICKSTART.md

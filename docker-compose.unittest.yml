@@ -1,14 +1,29 @@
 services:
   unittest:
+    image: ${COMPOSE_IMAGE_NAME:-asql-unittest-dev}
     build:
       context: .
       dockerfile: Dockerfile.unittest
+      target: unittest-dev
       args:
+        LIBCEDAR_VERSION: ${LIBCEDAR_VERSION:-v0.1.0}
+        LIBCEDAR_CACHE_BUST: ${LIBCEDAR_CACHE_BUST:-}
         PARALLEL_JOBS: ${PARALLEL_JOBS:-}
     volumes:
       - .:/mysql-source:ro
-    # We mount the source as read-only but the build happens in /mysql-build inside the container
-    # This allows for faster iterations if we use a persistent build volume
+      - unittest-build:/mysql-build
+      - unittest-ccache:/var/cache/asql-ccache
+    # Mount the source tree read-only and keep the build/ccache state in named
+    # volumes so repeated local test runs can reuse the same incremental build.
     environment:
       - CTEST_OUTPUT_ON_FAILURE=1
+      - AUTO_BUILD=1
+      - BUILD_DIR=/mysql-build
+      - SOURCE_DIR=/mysql-source
+      - CCACHE_DIR=/var/cache/asql-ccache
+      - PARALLEL_JOBS=${PARALLEL_JOBS:-}
     command: ["full"]
+
+volumes:
+  unittest-build:
+  unittest-ccache:

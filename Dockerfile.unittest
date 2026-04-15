@@ -1,16 +1,15 @@
-FROM ubuntu:22.04 AS builder
+# syntax=docker/dockerfile:1.7-labs
+
+FROM ubuntu:22.04 AS toolchain
 
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Build argument for parallel jobs (defaults to all available CPUs)
-ARG PARALLEL_JOBS
-ARG TARGETARCH
-ARG LIBCEDAR_VERSION
-ARG LIBCEDAR_PKG_BASE_URL=https://github.com/lurkingryuu/libcedar/releases/download
 ARG LIBCEDAR_PREFIX=/opt/libcedar
 
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y \
     build-essential \
+    ccache \
     cmake \
     git \
     ninja-build \
@@ -31,17 +30,37 @@ RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     libjsoncpp-dev \
     python3 \
-    wget \
+    rsync \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the packaged libcedar SDK from GitHub Releases.
-# LIBCEDAR_CACHE_BUST can be passed from the host (e.g. as a timestamp) to
-# force Docker to re-download the tarball even when all earlier layers are
-# cached.  Without a declared ARG, --build-arg LIBCEDAR_CACHE_BUST=... is
-# silently ignored by Docker and never invalidates this layer.
+FROM toolchain AS boost
+
+RUN mkdir -p /tmp/boost
+
+# Pre-download Boost to avoid timeout issues during cmake.
+RUN --mount=type=cache,target=/var/cache/asql-downloads/boost \
+    set -eux; \
+    boost_archive="/var/cache/asql-downloads/boost/boost_1_77_0.tar.bz2"; \
+    if [ ! -s "${boost_archive}" ]; then \
+      curl -fsSL -o "${boost_archive}" \
+        https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2; \
+    fi; \
+    rm -rf /tmp/boost/*; \
+    tar -xjf "${boost_archive}" -C /tmp/boost --strip-components=1
+
+FROM toolchain AS libcedar
+
+ARG TARGETARCH
+ARG LIBCEDAR_VERSION
+ARG LIBCEDAR_PKG_BASE_URL=https://github.com/lurkingryuu/libcedar/releases/download
+ARG LIBCEDAR_PREFIX=/opt/libcedar
+
+# LIBCEDAR_CACHE_BUST is intentionally opt-in and should only be used when
+# explicitly forcing a re-download of the packaged SDK.
 ARG LIBCEDAR_CACHE_BUST
-RUN set -eux; \
+RUN --mount=type=cache,target=/var/cache/asql-downloads/libcedar \
+    set -eux; \
     libcedar_version="${LIBCEDAR_VERSION:?LIBCEDAR_VERSION build arg must be set}"; \
     target_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "${target_arch}" in \
@@ -49,11 +68,14 @@ RUN set -eux; \
       arm64) libcedar_target="aarch64-unknown-linux-gnu" ;; \
       *) echo "Unsupported TARGETARCH: ${target_arch}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/libcedar.tar.gz \
-      "${LIBCEDAR_PKG_BASE_URL}/${libcedar_version}/libcedar-${libcedar_version#v}-${libcedar_target}.tar.gz"; \
+    archive_name="libcedar-${libcedar_version#v}-${libcedar_target}.tar.gz"; \
+    archive_path="/var/cache/asql-downloads/libcedar/${archive_name}"; \
+    if [ ! -s "${archive_path}" ] || [ -n "${LIBCEDAR_CACHE_BUST}" ]; then \
+      curl -fsSL -o "${archive_path}" \
+        "${LIBCEDAR_PKG_BASE_URL}/${libcedar_version}/${archive_name}"; \
+    fi; \
     mkdir -p "${LIBCEDAR_PREFIX}"; \
-    tar -xzf /tmp/libcedar.tar.gz -C "${LIBCEDAR_PREFIX}"; \
-    rm -f /tmp/libcedar.tar.gz; \
+    tar -xzf "${archive_path}" -C "${LIBCEDAR_PREFIX}"; \
     libcedar_pc_dir=""; \
     for candidate in "${LIBCEDAR_PREFIX}/lib/pkgconfig" "${LIBCEDAR_PREFIX}"/lib/*/pkgconfig; do \
       if [ -f "${candidate}/libcedar.pc" ]; then libcedar_pc_dir="${candidate}"; break; fi; \
@@ -61,18 +83,26 @@ RUN set -eux; \
     test -n "${libcedar_pc_dir}"; \
     ln -sfn "${libcedar_pc_dir}" "${LIBCEDAR_PREFIX}/lib/pkgconfig"
 
+FROM toolchain AS builder-base
+
+ARG LIBCEDAR_PREFIX=/opt/libcedar
+
 ENV PKG_CONFIG_PATH="${LIBCEDAR_PREFIX}/lib/pkgconfig"
 ENV CMAKE_PREFIX_PATH="${LIBCEDAR_PREFIX}"
+ENV CCACHE_DIR=/var/cache/asql-ccache
+ENV CCACHE_BASEDIR=/mysql-source
+ENV CCACHE_COMPILERCHECK=content
+ENV CCACHE_COMPRESS=1
+ENV CCACHE_MAXSIZE=10G
 
-RUN mkdir -p /tmp/boost /mysql-build
+COPY --from=boost /tmp/boost /tmp/boost
+COPY --from=libcedar ${LIBCEDAR_PREFIX} ${LIBCEDAR_PREFIX}
 
-# Pre-download Boost to avoid timeout issues during cmake
-RUN wget -q -O /tmp/boost.tar.bz2 https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2 && \
-    tar -xjf /tmp/boost.tar.bz2 -C /tmp/boost --strip-components=1
+RUN mkdir -p /mysql-build
 
 WORKDIR /mysql-source
 
-# Copy necessary files for build
+# Copy necessary files for build.
 COPY CMakeLists.txt MYSQL_VERSION *.cmake *.in *.h.cmake README INSTALL LICENSE ./
 COPY *.sh ./
 COPY sql/ sql/
@@ -85,7 +115,7 @@ COPY extra/ extra/
 COPY strings/ strings/
 COPY vio/ vio/
 COPY components/ components/
-COPY plugin/ plugin/
+COPY --exclude=authorization plugin/ plugin/
 COPY share/ share/
 COPY libservices/ libservices/
 COPY libbinlogevents/ libbinlogevents/
@@ -101,46 +131,10 @@ COPY support-files/ support-files/
 COPY testclients/ testclients/
 COPY scripts/ scripts/
 COPY mysql-test/ mysql-test/
-COPY unittest/ unittest/
+COPY --exclude=gunit/authorization unittest/ unittest/
 COPY doxygen_resources/ doxygen_resources/
-
-# Re-copy the auth/plugin sources we iterate on most often so the unittest image
-# always reflects the latest versions even if a broader directory copy is stale.
-COPY plugin/authorization/authorization_common.cc plugin/authorization/authorization_common.cc
-COPY plugin/authorization/cedar_authorization.cc plugin/authorization/cedar_authorization.cc
-COPY plugin/authorization/embedded_cedar.cc plugin/authorization/embedded_cedar.cc
-COPY plugin/authorization/embedded_cedar.h plugin/authorization/embedded_cedar.h
-COPY plugin/authorization/CMakeLists.txt plugin/authorization/CMakeLists.txt
-COPY plugin/authorization/testdata/embedded_cedar/schema.json plugin/authorization/testdata/embedded_cedar/schema.json
-COPY unittest/gunit/authorization/CMakeLists.txt unittest/gunit/authorization/CMakeLists.txt
-COPY unittest/gunit/authorization/authorization-t.cc unittest/gunit/authorization/authorization-t.cc
-COPY unittest/gunit/authorization/embedded-cedar-t.cc unittest/gunit/authorization/embedded-cedar-t.cc
-
-WORKDIR /mysql-build
-
-# Configure for unittests
-# Use RelWithDebInfo to reduce build artifacts size (Debug is too huge for some Docker environments)
-RUN cmake -S /mysql-source -B /mysql-build \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCMAKE_INSTALL_PREFIX=/usr/local/mysql \
-    -DDOWNLOAD_BOOST=0 \
-    -DWITH_BOOST=/tmp/boost \
-    -DWITH_UNIT_TESTS=ON \
-    -DWITH_DEBUG=OFF \
-    -DENABLED_LOCAL_INFILE=1 \
-    -DMYSQL_DATADIR=/var/lib/mysql \
-    -DSYSCONFDIR=/etc/mysql \
-    -DWITH_SSL=system \
-    -G Ninja
-
-# Build the server, plugins, and focused test binaries needed by the unified
-# authorization test runner. Avoid the default `all` target to keep image size
-# and build time manageable.
-RUN if [ -n "${PARALLEL_JOBS}" ]; then \
-        ninja -j${PARALLEL_JOBS} mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t; \
-    else \
-        ninja -j$(nproc) mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t; \
-    fi
+COPY plugin/authorization/ plugin/authorization/
+COPY unittest/gunit/authorization/ unittest/gunit/authorization/
 
 RUN chmod +x \
     /mysql-source/unittest/docker/run-test-suite.sh \
@@ -151,3 +145,53 @@ WORKDIR /mysql-build
 
 ENTRYPOINT ["/mysql-source/unittest/docker/run-test-suite.sh"]
 CMD ["full"]
+
+FROM builder-base AS builder
+
+# Build argument for parallel jobs (defaults to all available CPUs)
+ARG PARALLEL_JOBS
+
+WORKDIR /mysql-build
+
+# Keep the full build tree and ccache in persistent BuildKit caches so small
+# source edits only rebuild the affected objects and targets.
+RUN --mount=type=cache,target=/var/cache/asql-build/unittest \
+    --mount=type=cache,target=/var/cache/asql-ccache \
+    set -eux; \
+    build_cache_dir="/var/cache/asql-build/unittest"; \
+    mkdir -p "${CCACHE_DIR}"; \
+    ccache --zero-stats || true; \
+    cmake -S /mysql-source -B "${build_cache_dir}" \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCMAKE_INSTALL_PREFIX=/usr/local/mysql \
+      -DDOWNLOAD_BOOST=0 \
+      -DWITH_BOOST=/tmp/boost \
+      -DWITH_UNIT_TESTS=ON \
+      -DWITH_DEBUG=OFF \
+      -DENABLED_LOCAL_INFILE=1 \
+      -DMYSQL_DATADIR=/var/lib/mysql \
+      -DSYSCONFDIR=/etc/mysql \
+      -DWITH_SSL=system \
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+      -G Ninja; \
+    if [ -n "${PARALLEL_JOBS}" ]; then \
+      ninja -C "${build_cache_dir}" -j"${PARALLEL_JOBS}" \
+        mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t; \
+    else \
+      ninja -C "${build_cache_dir}" -j"$(nproc)" \
+        mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t; \
+    fi; \
+    ccache --show-stats || true; \
+    rsync -a --delete "${build_cache_dir}/" /mysql-build/
+
+FROM builder-base AS unittest-dev
+
+ENV AUTO_BUILD=1
+
+WORKDIR /mysql-build
+
+ENTRYPOINT ["/mysql-source/unittest/docker/run-test-suite.sh"]
+CMD ["full"]
+
+FROM builder AS unittest

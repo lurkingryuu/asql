@@ -7,6 +7,11 @@ shift || true
 
 SOURCE_DIR="${SOURCE_DIR:-/mysql-source}"
 BUILD_DIR="${BUILD_DIR:-/mysql-build}"
+BOOST_DIR="${BOOST_DIR:-/tmp/boost}"
+CCACHE_DIR="${CCACHE_DIR:-/var/cache/asql-ccache}"
+PARALLEL_JOBS="${PARALLEL_JOBS:-}"
+AUTO_BUILD="${AUTO_BUILD:-0}"
+BUILD_TARGETS="${BUILD_TARGETS:-mysqld mysql ddl_audit embedded_cedar authorization-t embedded-cedar-t}"
 RUNTIME_DIR="${BUILD_DIR}/runtime_output_directory"
 PLUGIN_DIR="${BUILD_DIR}/plugin_output_directory"
 MYSQLD_BIN="${MYSQLD_BIN:-${RUNTIME_DIR}/mysqld}"
@@ -106,6 +111,68 @@ start_mysql() {
 
   echo "MySQL failed to start; see ${MYSQL_LOGFILE}" >&2
   return 1
+}
+
+ensure_build_artifacts() {
+  local needs_build=0
+  local -a cmake_args
+  local -a targets
+
+  if [ ! -x "${MYSQLD_BIN}" ] || [ ! -x "${MYSQL_BIN}" ]; then
+    needs_build=1
+  fi
+
+  if [ "${AUTO_BUILD}" != "1" ] && [ "${needs_build}" -eq 0 ]; then
+    return 0
+  fi
+
+  if [ "${AUTO_BUILD}" != "1" ] && [ "${needs_build}" -eq 1 ]; then
+    echo "Build artifacts are missing in ${BUILD_DIR}. Rebuild the unittest image or set AUTO_BUILD=1." >&2
+    return 1
+  fi
+
+  echo "Synchronizing build artifacts in ${BUILD_DIR}..."
+  mkdir -p "${BUILD_DIR}" "${CCACHE_DIR}"
+  targets=( ${BUILD_TARGETS} )
+  cmake_args=(
+    -S "${SOURCE_DIR}"
+    -B "${BUILD_DIR}"
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    -DCMAKE_INSTALL_PREFIX=/usr/local/mysql
+    -DDOWNLOAD_BOOST=0
+    -DWITH_BOOST="${BOOST_DIR}"
+    -DWITH_UNIT_TESTS=ON
+    -DWITH_DEBUG=OFF
+    -DENABLED_LOCAL_INFILE=1
+    -DMYSQL_DATADIR=/var/lib/mysql
+    -DSYSCONFDIR=/etc/mysql
+    -DWITH_SSL=system
+    -G Ninja
+  )
+
+  if command -v ccache >/dev/null 2>&1; then
+    export CCACHE_DIR
+    export CCACHE_BASEDIR="${SOURCE_DIR}"
+    export CCACHE_COMPILERCHECK="${CCACHE_COMPILERCHECK:-content}"
+    export CCACHE_COMPRESS="${CCACHE_COMPRESS:-1}"
+    export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-10G}"
+    ccache --zero-stats || true
+    cmake_args+=(
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    )
+  fi
+
+  cmake "${cmake_args[@]}"
+  if [ -n "${PARALLEL_JOBS}" ]; then
+    ninja -C "${BUILD_DIR}" -j"${PARALLEL_JOBS}" "${targets[@]}"
+  else
+    ninja -C "${BUILD_DIR}" -j"$(nproc)" "${targets[@]}"
+  fi
+
+  if command -v ccache >/dev/null 2>&1; then
+    ccache --show-stats || true
+  fi
 }
 
 run_unit_tests() {
@@ -231,6 +298,8 @@ run_integrated_embedded() {
     --embedded-schema-file "${SOURCE_DIR}/plugin/authorization/testdata/embedded_cedar/schema.json" \
     --embedded-entities-file "${SOURCE_DIR}/plugin/authorization/testdata/embedded_cedar/entities.json"
 }
+
+ensure_build_artifacts
 
 case "${MODE}" in
   unit)
