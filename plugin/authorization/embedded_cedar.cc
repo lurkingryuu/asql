@@ -311,12 +311,16 @@ class ShardedAuthCache {
   }
 
   bool get(const AuthCacheKey &key, AuthCacheEntry &entry) {
+    return get(key, entry, std::time(nullptr));
+  }
+
+  bool get(const AuthCacheKey &key, AuthCacheEntry &entry, std::time_t now) {
     size_t idx = get_shard(key);
     CacheShard &s = shards_[idx];
     mysql_mutex_lock(&s.mutex);
     auto it = s.entries.find(key);
     if (it != s.entries.end()) {
-      if (std::time(nullptr) < it->second.expires) {
+      if (now < it->second.expires) {
         s.lru_list.splice(s.lru_list.begin(), s.lru_list, it->second.lru_iter);
         entry = it->second;
         mysql_mutex_unlock(&s.mutex);
@@ -505,6 +509,24 @@ static inline CedarDecision authorize_embedded_request(CedarEngine *engine,
                                     context_json);
 }
 
+struct EngineReadGuard {
+  CedarEngine *engine{nullptr};
+  bool locked{false};
+
+  ~EngineReadGuard() {
+    if (locked) mysql_rwlock_unlock(&LOCK_cedar_engine);
+  }
+
+  CedarEngine *get() {
+    if (!locked) {
+      mysql_rwlock_rdlock(&LOCK_cedar_engine);
+      locked = true;
+      engine = g_cedar_engine;
+    }
+    return engine;
+  }
+};
+
 #ifdef EXTRA_CODE_FOR_UNIT_TESTING
 static CedarDecision retry_embedded_request_for_tests(
     const std::string &principal, const std::string &action,
@@ -557,16 +579,18 @@ static CedarDecision retry_embedded_request_for_tests(
 
 static int check_single_privilege_embedded(
     const std::string &user_uid, const std::string &resource_id,
-    std::string_view privilege, const std::string &principal,
-    const std::string &resource, const std::string &action_prefix,
-    const std::string &context_json, const std::string &day, uint32_t date,
-    const std::string &client_ip, CedarEngine *engine) {
+    std::string_view privilege, const std::string &prefix,
+    const auth_common::AuthTimeContext &time_ctx, const std::string &client_ip,
+    bool &request_materialized, std::string &principal, std::string &resource,
+    std::string &action_prefix, std::string &context_json,
+    EngineReadGuard &engine_guard, std::time_t cache_now,
+    int max_per_shard) {
   AuthCacheKey key;
   if (embedded_cedar_cache_enabled) {
-    key = AuthCacheKey{user_uid, resource_id, std::string(privilege), day, date,
-                       client_ip};
+    key = AuthCacheKey{user_uid, resource_id, std::string(privilege),
+                       time_ctx.day, time_ctx.date, client_ip};
     AuthCacheEntry entry;
-    if (g_cache.get(key, entry)) {
+    if (g_cache.get(key, entry, cache_now)) {
       if (embedded_cedar_collect_stats) get_thread_stats().cache_hits++;
       if (should_log_info())
         my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
@@ -576,6 +600,27 @@ static int check_single_privilege_embedded(
       return entry.result;
     }
     if (embedded_cedar_collect_stats) get_thread_stats().cache_misses++;
+  }
+
+  if (!request_materialized) {
+    principal = build_prefixed_uid(prefix, "User", user_uid);
+    resource.reserve(prefix.size() + resource_id.size());
+    resource.append(prefix);
+    resource.append(resource_id);
+    action_prefix.reserve(prefix.size() + 9);
+    action_prefix.append(prefix);
+    action_prefix.append("Action::\"");
+    context_json = auth_common::auth_build_context_json(time_ctx, client_ip);
+    request_materialized = true;
+  }
+
+  CedarEngine *engine = engine_guard.get();
+  if (!engine) EC_UNLIKELY {
+    t_last_request_error = "embedded_cedar: engine not loaded";
+    if (plugin_handle)
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "embedded_cedar: engine not loaded; returning IGNORE");
+    return -1;
   }
 
   std::string action;
@@ -630,10 +675,7 @@ static int check_single_privilege_embedded(
   int result = (decision == Allow) ? 1 : 0;
 
   if (embedded_cedar_cache_enabled) {
-    std::time_t now = std::time(nullptr);
-    AuthCacheEntry entry{result, now + embedded_cedar_cache_ttl, {}};
-    int max_per_shard =
-        std::max(1, embedded_cedar_cache_size / static_cast<int>(kNumShards));
+    AuthCacheEntry entry{result, cache_now + embedded_cedar_cache_ttl, {}};
     int evictions = g_cache.put(std::move(key), entry, max_per_shard);
     if (embedded_cedar_collect_stats && evictions > 0)
       get_thread_stats().cache_evictions += evictions;
@@ -644,18 +686,6 @@ static int check_single_privilege_embedded(
 
 static int embedded_check_access_core(const mysql_authorization_event *event) {
   if (!plugin_initialized) EC_UNLIKELY { return -1; }
-
-  CedarEngine *engine = nullptr;
-  mysql_rwlock_rdlock(&LOCK_cedar_engine);
-  engine = g_cedar_engine;
-  if (!engine) EC_UNLIKELY {
-    mysql_rwlock_unlock(&LOCK_cedar_engine);
-    t_last_request_error = "embedded_cedar: engine not loaded";
-    if (plugin_handle)
-      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                            "embedded_cedar: engine not loaded; returning IGNORE");
-    return -1;
-  }
 
   std::string user_uid = auth_common::auth_build_user_uid(event);
   std::string_view ns =
@@ -670,10 +700,18 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
     prefix.append(ns.data(), ns.size());
     prefix.append("::");
   }
-  std::string principal = build_prefixed_uid(prefix, "User", user_uid);
-  std::string resource = prefix + resource_id;
-  std::string action_prefix = prefix + "Action::\"";
-  std::string context_json = auth_common::auth_build_context_json(time_ctx, ip);
+  bool request_materialized = false;
+  std::string principal;
+  std::string resource;
+  std::string action_prefix;
+  std::string context_json;
+  EngineReadGuard engine_guard;
+  std::time_t cache_now =
+      embedded_cedar_cache_enabled ? std::time(nullptr) : 0;
+  int max_per_shard = embedded_cedar_cache_enabled
+                          ? std::max(1, embedded_cedar_cache_size /
+                                             static_cast<int>(kNumShards))
+                          : 1;
 
   static const std::pair<const char *, int> kStdPrivs[] = {
       {"SELECT", 0}, {"INSERT", 1}, {"UPDATE", 2}, {"DELETE", 3},
@@ -697,9 +735,11 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
   auto evaluate_privilege = [&](std::string_view privilege) {
     any_checked = true;
     int r = check_single_privilege_embedded(user_uid, resource_id, privilege,
-                                            principal, resource, action_prefix,
-                                            context_json, time_ctx.day,
-                                            time_ctx.date, ip, engine);
+                                            prefix, time_ctx, ip,
+                                            request_materialized, principal,
+                                            resource, action_prefix,
+                                            context_json, engine_guard,
+                                            cache_now, max_per_shard);
 
     if (r == -1) EC_UNLIKELY { return -1; }
 
@@ -721,23 +761,18 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
     if (!(event->privileges & bit)) continue;
     seen_offsets |= bit;
     int loop_result = evaluate_privilege(p.first);
-    if (loop_result != 0) {
-      mysql_rwlock_unlock(&LOCK_cedar_engine);
+    if (loop_result != 0)
       return (loop_result < 0) ? -1 : (authorized ? 1 : 0);
-    }
   }
 
   for (const auto &[priv, offset] : privs::global_acls_map) {
     unsigned long bit = (1UL << offset);
     if (!(event->privileges & bit) || (seen_offsets & bit)) continue;
     int loop_result = evaluate_privilege(priv);
-    if (loop_result != 0) {
-      mysql_rwlock_unlock(&LOCK_cedar_engine);
+    if (loop_result != 0)
       return (loop_result < 0) ? -1 : (authorized ? 1 : 0);
-    }
   }
 
-  mysql_rwlock_unlock(&LOCK_cedar_engine);
   if (!any_checked) return 1;
   return authorized ? 1 : 0;
 }
