@@ -141,6 +141,19 @@
 #include <ctime>
 using namespace std;
 
+#if defined(__has_cpp_attribute)
+#if __has_cpp_attribute(likely) && __has_cpp_attribute(unlikely)
+#define CA_LIKELY [[likely]]
+#define CA_UNLIKELY [[unlikely]]
+#else
+#define CA_LIKELY
+#define CA_UNLIKELY
+#endif
+#else
+#define CA_LIKELY
+#define CA_UNLIKELY
+#endif
+
 // Statistics structure
 struct AuthStats {
   int64_t requests{0};
@@ -634,7 +647,7 @@ static int check_single_privilege_cedar(
   }
 
   // Check if URL is configured
-  if (!cedar_authorization_url || strlen(cedar_authorization_url) == 0) {
+  if (!cedar_authorization_url || strlen(cedar_authorization_url) == 0) CA_UNLIKELY {
     if (plugin_handle) {
       my_plugin_log_message(
           &plugin_handle, MY_WARNING_LEVEL,
@@ -676,7 +689,7 @@ static int check_single_privilege_cedar(
   // Acquire pooled CURL handle
   ScopedCurlHandle scoped_curl;
   CURL *curl = scoped_curl.get();
-  if (!curl) {
+  if (!curl) CA_UNLIKELY {
     if (plugin_handle) {
       my_plugin_log_message(
           &plugin_handle, MY_ERROR_LEVEL,
@@ -795,7 +808,7 @@ static int check_single_privilege_cedar(
 
   curl_slist_free_all(headers);
 
-  if (res != CURLE_OK) {
+  if (res != CURLE_OK) CA_UNLIKELY {
     if (plugin_handle)
       my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
                             "Cedar authorization request failed for privilege "
@@ -807,7 +820,7 @@ static int check_single_privilege_cedar(
     return -1;  // Signal error (fail-open to IGNORE)
   }
 
-  if (response_code != 200) {
+  if (response_code != 200) CA_UNLIKELY {
     if (plugin_handle)
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                             "Cedar authorization server returned HTTP %ld for "
@@ -827,7 +840,7 @@ static int check_single_privilege_cedar(
   std::istringstream response_stream(response.data);
 
   if (!Json::parseFromStream(reader_builder, response_stream, &json_response,
-                             &parse_errors)) {
+                             &parse_errors)) CA_UNLIKELY {
     if (plugin_handle)
       my_plugin_log_message(
           &plugin_handle, MY_WARNING_LEVEL,
@@ -839,7 +852,7 @@ static int check_single_privilege_cedar(
     return -1;  // Signal error (fail-open to IGNORE)
   }
 
-  if (!json_response.isMember("decision")) {
+  if (!json_response.isMember("decision")) CA_UNLIKELY {
     if (plugin_handle)
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                             "Cedar authorization response missing 'decision' "
@@ -889,7 +902,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
         auth_common::auth_event_type_to_string(event->event_subclass).c_str());
   }
 
-  if (!plugin_initialized) {
+  if (!plugin_initialized) CA_UNLIKELY {
     if (plugin_handle) {
       my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
                             "Cedar authorization plugin not initialized");
@@ -897,7 +910,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
     return -1;
   }
 
-  if (!cedar_authorization_url || strlen(cedar_authorization_url) == 0) {
+  if (!cedar_authorization_url || strlen(cedar_authorization_url) == 0) CA_UNLIKELY {
     if (plugin_handle) {
       my_plugin_log_message(
           &plugin_handle, MY_WARNING_LEVEL,
@@ -1024,7 +1037,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
         user_uid_value, resource_identifier, privilege, day, date, fmt_time,
         client_ip, ns);
 
-    if (privilege_result == -1) {
+    if (privilege_result == -1) CA_UNLIKELY {
       // Error occurred, return IGNORE
       if (plugin_handle) {
         my_plugin_log_message(&plugin_handle, MY_ERROR_LEVEL,
@@ -1035,7 +1048,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
     }
 
     if (is_any_of) {
-      if (privilege_result == 1) {
+      if (privilege_result == 1) CA_LIKELY {
         // ANY_OF: One success is enough
         authorized = true;
         if (cedar_should_log_info()) {
@@ -1048,7 +1061,7 @@ static int cedar_check_access_core(const mysql_authorization_event *event) {
       }
     } else {
       // ALL_OF: One failure is enough to fail
-      if (privilege_result == 0) {
+      if (privilege_result == 0) CA_UNLIKELY {
         authorized = false;
         if (cedar_should_log_info()) {
           my_plugin_log_message(
@@ -1114,7 +1127,7 @@ mysql_authorization_result_t cedar_check(
         (unsigned long)event->privileges);
   }
 
-  if (!plugin_initialized) {
+  if (!plugin_initialized) CA_UNLIKELY {
     if (plugin_handle) {
       my_plugin_log_message(
           &plugin_handle, MY_WARNING_LEVEL,
@@ -1150,7 +1163,7 @@ mysql_authorization_result_t cedar_check(
   if (event->event_subclass != MYSQL_AUTHORIZATION_DB_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_TABLE_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_COLUMN_ACCESS &&
-      event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS) {
+      event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS) CA_UNLIKELY {
     if (cedar_should_log_info()) {
       my_plugin_log_message(
           &plugin_handle, MY_INFORMATION_LEVEL,
@@ -1183,13 +1196,13 @@ mysql_authorization_result_t cedar_check(
     result = cedar_check_access_core(event);
   }
 
-  if (result == -1) {
+  if (result == -1) CA_UNLIKELY {
     if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: IGNORE");
     }
     return MYSQL_AUTHORIZATION_IGNORE;
-  } else if (result == 1) {
+  } else if (result == 1) CA_LIKELY {
     if (cedar_should_log_info()) {
       my_plugin_log_message(&plugin_handle, MY_INFORMATION_LEVEL,
                             "Cedar authorization: GRANT");

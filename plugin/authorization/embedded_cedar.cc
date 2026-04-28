@@ -82,6 +82,19 @@ extern "C" {
 #include "sql/protocol_classic.h"
 #include "violite.h"
 
+#if defined(__has_cpp_attribute)
+#if __has_cpp_attribute(likely) && __has_cpp_attribute(unlikely)
+#define EC_LIKELY [[likely]]
+#define EC_UNLIKELY [[unlikely]]
+#else
+#define EC_LIKELY
+#define EC_UNLIKELY
+#endif
+#else
+#define EC_LIKELY
+#define EC_UNLIKELY
+#endif
+
 struct EmbeddedAuthStats {
   int64_t requests{0};
   int64_t grants{0};
@@ -547,7 +560,7 @@ static int check_single_privilege_embedded(
     std::string_view privilege, const std::string &principal,
     const std::string &resource, const std::string &action_prefix,
     const std::string &context_json, const std::string &day, uint32_t date,
-    const std::string &client_ip) {
+    const std::string &client_ip, CedarEngine *engine) {
   AuthCacheKey key;
   if (embedded_cedar_cache_enabled) {
     key = AuthCacheKey{user_uid, resource_id, std::string(privilege), day, date,
@@ -574,34 +587,23 @@ static int check_single_privilege_embedded(
   CedarDecision decision;
   std::string engine_error;
   {
-    mysql_rwlock_rdlock(&LOCK_cedar_engine);
-    if (!g_cedar_engine) {
-      mysql_rwlock_unlock(&LOCK_cedar_engine);
-      t_last_request_error = "embedded_cedar: engine not loaded";
-      if (plugin_handle)
-        my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
-                              "embedded_cedar: engine not loaded; returning IGNORE");
-      return -1;
-    }
-
     if (embedded_cedar_collect_stats) {
       auto t0 = std::chrono::high_resolution_clock::now();
-      decision = authorize_embedded_request(g_cedar_engine, principal.c_str(),
+      decision = authorize_embedded_request(engine, principal.c_str(),
                                             action.c_str(), resource.c_str(),
                                             context_json.c_str());
       auto t1 = std::chrono::high_resolution_clock::now();
       get_thread_stats().eval_time_us +=
           std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
     } else {
-      decision = authorize_embedded_request(g_cedar_engine, principal.c_str(),
+      decision = authorize_embedded_request(engine, principal.c_str(),
                                             action.c_str(), resource.c_str(),
                                             context_json.c_str());
     }
     if (decision == Error) {
-      const char *err = cedar_engine_last_error(g_cedar_engine);
+      const char *err = cedar_engine_last_error(engine);
       if (err != nullptr) engine_error.assign(err);
     }
-    mysql_rwlock_unlock(&LOCK_cedar_engine);
   }
 
   if (decision == Error) {
@@ -641,7 +643,19 @@ static int check_single_privilege_embedded(
 }
 
 static int embedded_check_access_core(const mysql_authorization_event *event) {
-  if (!plugin_initialized) return -1;
+  if (!plugin_initialized) EC_UNLIKELY { return -1; }
+
+  CedarEngine *engine = nullptr;
+  mysql_rwlock_rdlock(&LOCK_cedar_engine);
+  engine = g_cedar_engine;
+  if (!engine) EC_UNLIKELY {
+    mysql_rwlock_unlock(&LOCK_cedar_engine);
+    t_last_request_error = "embedded_cedar: engine not loaded";
+    if (plugin_handle)
+      my_plugin_log_message(&plugin_handle, MY_WARNING_LEVEL,
+                            "embedded_cedar: engine not loaded; returning IGNORE");
+    return -1;
+  }
 
   std::string user_uid = auth_common::auth_build_user_uid(event);
   std::string_view ns =
@@ -685,16 +699,16 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
     int r = check_single_privilege_embedded(user_uid, resource_id, privilege,
                                             principal, resource, action_prefix,
                                             context_json, time_ctx.day,
-                                            time_ctx.date, ip);
+                                            time_ctx.date, ip, engine);
 
-    if (r == -1) return -1;
+    if (r == -1) EC_UNLIKELY { return -1; }
 
     if (is_any_of) {
-      if (r == 1) {
+      if (r == 1) EC_LIKELY {
         authorized = true;
         return 1;
       }
-    } else if (r == 0) {
+    } else if (r == 0) EC_UNLIKELY {
       authorized = false;
       return 1;
     }
@@ -707,16 +721,23 @@ static int embedded_check_access_core(const mysql_authorization_event *event) {
     if (!(event->privileges & bit)) continue;
     seen_offsets |= bit;
     int loop_result = evaluate_privilege(p.first);
-    if (loop_result != 0) return (loop_result < 0) ? -1 : (authorized ? 1 : 0);
+    if (loop_result != 0) {
+      mysql_rwlock_unlock(&LOCK_cedar_engine);
+      return (loop_result < 0) ? -1 : (authorized ? 1 : 0);
+    }
   }
 
   for (const auto &[priv, offset] : privs::global_acls_map) {
     unsigned long bit = (1UL << offset);
     if (!(event->privileges & bit) || (seen_offsets & bit)) continue;
     int loop_result = evaluate_privilege(priv);
-    if (loop_result != 0) return (loop_result < 0) ? -1 : (authorized ? 1 : 0);
+    if (loop_result != 0) {
+      mysql_rwlock_unlock(&LOCK_cedar_engine);
+      return (loop_result < 0) ? -1 : (authorized ? 1 : 0);
+    }
   }
 
+  mysql_rwlock_unlock(&LOCK_cedar_engine);
   if (!any_checked) return 1;
   return authorized ? 1 : 0;
 }
@@ -726,7 +747,7 @@ mysql_authorization_result_t embedded_cedar_check(
   t_last_request_error.clear();
   if (embedded_cedar_collect_stats) get_thread_stats().requests++;
 
-  if (!plugin_initialized || !embedded_cedar_enabled)
+  if (!plugin_initialized || !embedded_cedar_enabled) EC_UNLIKELY
     return MYSQL_AUTHORIZATION_IGNORE;
 
   if (event->requirement_mode ==
@@ -739,7 +760,7 @@ mysql_authorization_result_t embedded_cedar_check(
   if (event->event_subclass != MYSQL_AUTHORIZATION_DB_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_TABLE_ACCESS &&
       event->event_subclass != MYSQL_AUTHORIZATION_COLUMN_ACCESS &&
-      event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS)
+      event->event_subclass != MYSQL_AUTHORIZATION_ROUTINE_ACCESS) EC_UNLIKELY
     return MYSQL_AUTHORIZATION_IGNORE;
 
   if (!embedded_cedar_enable_column_access &&
@@ -759,7 +780,7 @@ mysql_authorization_result_t embedded_cedar_check(
     result = embedded_check_access_core(event);
   }
 
-  if (result == -1) return MYSQL_AUTHORIZATION_IGNORE;
+  if (result == -1) EC_UNLIKELY { return MYSQL_AUTHORIZATION_IGNORE; }
   if (result == 1) {
     if (embedded_cedar_collect_stats) get_thread_stats().grants++;
     return MYSQL_AUTHORIZATION_GRANT;
